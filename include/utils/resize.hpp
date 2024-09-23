@@ -1,5 +1,4 @@
-#ifndef INCLUDE_RESIZE_HPP
-#define INCLUDE_RESIZE_HPP
+#pragma once
 
 #include <vector>
 #include <stdint.h>
@@ -69,6 +68,4 @@ namespace utils
     return nested;
   }
 
-};
-
-#endif
+}

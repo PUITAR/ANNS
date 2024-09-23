@@ -1,5 +1,4 @@
-#ifndef INCLUDE_STIMER_HPP
-#define INCLUDE_STIMER_HPP
+#pragma once
 
 #include <chrono>
 
@@ -30,6 +29,4 @@ namespace utils
     double GetTime() { return total_; }
   };
 
-};
-
-#endif
+}

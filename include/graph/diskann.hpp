@@ -1,14 +1,7 @@
 #pragma once
 
-// #include <index_status.hpp>
-// #include <graph/visited_list_pool.hpp>
-
-// #include <stdlib.h>
 
 #include <vector_ops.hpp>
-// #include <graph/visited_list_pool.hpp>
-// #include <vector_ops.hpp>
-
 #include <random>
 #include <iostream>
 #include <fstream>
@@ -22,7 +15,7 @@
 #include <queue>
 #include <memory>
 #include <mutex>
-// #include <quantizer.hpp>
+#include <algorithm>
 
 #ifdef _MSC_VER
 #include <immintrin.h>
@@ -43,22 +36,20 @@ namespace anns
     class DiskANN
     {
     public:
-      size_t max_elements_{0};
       size_t cur_element_count_{0};
-      size_t size_data_per_element_{0};
-      size_t size_links_per_element_{0};
       size_t R_{0}; // Graph degree limit
-      size_t data_size_{0};
       size_t D_{0}; // vector dimension
-      size_t offset_data_{0};
-      // std::unique_ptr<VisitedListPool> visited_list_pool_{nullptr};
+      size_t Lc_{0};
+      size_t Ld_{0}; // Delete vector batch size
+      float alpha_{.0};
       id_t enterpoint_node_{0};
-      std::unique_ptr<std::vector<char>> data_memory_;
+      std::unique_ptr<std::vector<const vdim_t *>> vector_data_{nullptr};
+      std::unique_ptr<std::vector<std::vector<id_t>>> neighbors_{nullptr};
       int random_seed_{123};
-      bool ready_{false};
+      // bool ready_{false};
       size_t num_threads_{1};
       std::mutex global_;
-      std::unique_ptr<std::vector<std::mutex>> link_list_locks_;
+      std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
       struct PHash
       {
         id_t operator()(const std::pair<float, id_t> &pr) const
@@ -67,41 +58,39 @@ namespace anns
         }
       };
       std::atomic<size_t> comparison_{0};
+      std::priority_queue<id_t> free_ids_;
+      std::vector<id_t> delete_list_;
 
       DiskANN(
           size_t D,
-          size_t max_elements,
           size_t R,
-          int random_seed = 123) : D_(D), max_elements_(max_elements), R_(R), random_seed_(random_seed)
+          size_t Lc,
+          float alpha,
+          size_t Ld = 128,
+          int random_seed = 123) : D_(D), R_(R), Lc_(Lc), alpha_(alpha), Ld_(Ld), random_seed_(random_seed)
       {
-        data_size_ = D_ * sizeof(vdim_t);
-        size_links_per_element_ = R_ * sizeof(id_t) + sizeof(size_t);
-        size_data_per_element_ = size_links_per_element_ + sizeof(vdim_t *);
-        offset_data_ = size_links_per_element_;
-        data_memory_ = std::make_unique<std::vector<char>>(max_elements_ * size_data_per_element_, 0x00);
-        assert(data_memory_ != nullptr);
+        vector_data_ = std::make_unique<std::vector<const vdim_t *>>();
+        neighbors_ = std::make_unique<std::vector<std::vector<id_t>>>();
         cur_element_count_ = 0;
-        // visited_list_pool_ = std::make_unique<VisitedListPool>(1, max_elements_);
-        link_list_locks_ = std::make_unique<std::vector<std::mutex>>(max_elements_);
         enterpoint_node_ = -1;
       }
 
       inline const vdim_t *
       GetDataByInternalID(id_t id) const
       {
-        return *((const vdim_t **)(data_memory_->data() + id * size_data_per_element_ + offset_data_));
+        return vector_data_->at(id);
       }
 
       inline void
       WriteDataByInternalID(id_t id, const vdim_t *data_point)
       {
-        *((const vdim_t **)(data_memory_->data() + id * size_data_per_element_ + offset_data_)) = data_point;
+        vector_data_->at(id) = data_point;
       }
 
-      inline char *
+      std::vector<id_t> &
       GetLinkByInternalID(id_t id) const
       {
-        return (char *)(data_memory_->data() + id * size_data_per_element_);
+        return neighbors_->at(id);
       }
 
       size_t GetNumThreads()
@@ -114,235 +103,159 @@ namespace anns
         num_threads_ = num_threads;
       }
 
-      bool Ready() { return ready_; }
-
-      /// @brief the single thread search for a query
-      /// @tparam vdim_t
-      /// @param query_data
+      /// @brief Search the base layer.
+      /// @param data_point
       /// @param k
-      /// @param L
-      void Search(const vdim_t *query_data, size_t k, size_t L, std::vector<std::pair<float, id_t>> &visited)
+      /// @param ef
+      /// @return a maxheap containing the knn results
+      std::priority_queue<std::pair<float, id_t>>
+      SearchBaseLayer(const vdim_t *data_point, size_t k, size_t ef)
       {
-        static const size_t rb = 2;
-        assert(L >= k);
+        auto mass_visited = std::make_unique<std::vector<bool>>(cur_element_count_, false);
+
+        std::priority_queue<std::pair<float, id_t>> top_candidates;
+        std::priority_queue<std::pair<float, id_t>> candidate_set;
 
         size_t comparison = 0;
 
-        /// @brief Search top-K NNs in a gready way
-        // visited.clear();
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto visited_set = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-
-        auto visited_set = std::make_unique<std::vector<bool>>(max_elements_, false);
-        auto top_candidates = std::make_unique<std::priority_queue<std::pair<float, id_t>>>(); /* min-heap to remain the top-L NNs */
-        id_t ep = rand() % rb;
-        top_candidates->push({-vec_L2sqr(GetDataByInternalID(ep), query_data, D_), ep});
+        float dist = vec_L2sqr(data_point, GetDataByInternalID(enterpoint_node_), D_);
         comparison++;
-        while (top_candidates->size())
+
+        top_candidates.emplace(dist, enterpoint_node_); // max heap
+        candidate_set.emplace(-dist, enterpoint_node_); // min heap
+        mass_visited->at(enterpoint_node_) = true;
+
+        /// @brief Branch and Bound Algorithm
+        float low_bound = dist;
+        while (candidate_set.size())
         {
-          auto [pstar_dist, pstar] = top_candidates->top();
-          // std::cout << "pstar_dist: " << pstar_dist << ", pstar: " << pstar << std::endl;
-          // visited_set[pstar] = curr_visited;          // update visited_set
-          visited_set->at(pstar) = true;
-          visited.push_back(top_candidates->top()); // update visited
-          top_candidates->pop();
+          auto curr_el_pair = candidate_set.top();
+          if (-curr_el_pair.first > low_bound && top_candidates.size() == ef)
+            break;
+
+          candidate_set.pop();
+          id_t curr_node_id = curr_el_pair.second;
+
+          std::unique_lock<std::mutex> lock(*link_list_locks_[curr_node_id]);
+          const auto &neighbors = GetLinkByInternalID(curr_node_id);
+
+          for (id_t neighbor_id : neighbors)
           {
-            std::unique_lock<std::mutex> lock((*link_list_locks_)[pstar]);
-            size_t *llc = (size_t *)GetLinkByInternalID(pstar);
-            size_t num_neighbors = *llc;
-            id_t *neighbors = (id_t *)(llc + 1);
-            for (size_t i = 0; i < num_neighbors; i++)
+            if (!mass_visited->at(neighbor_id))
             {
-              id_t neighbor_id = neighbors[i];
-              // std::cout << "neighbor_id: " << neighbor_id << std::endl;
-              if (visited_set->at(neighbor_id) == false)
+              mass_visited->at(neighbor_id) = true;
+
+              float dd = vec_L2sqr(data_point, GetDataByInternalID(neighbor_id), D_);
+              comparison++;
+
+              /// @brief If neighbor is closer than farest vector in top result, and result.size still less than ef
+              if (top_candidates.top().first > dd || top_candidates.size() < ef)
               {
-                top_candidates->push(
-                    {-vec_L2sqr(GetDataByInternalID(neighbor_id), query_data, D_), neighbor_id});
-                comparison++;
+                candidate_set.emplace(-dd, neighbor_id);
+                top_candidates.emplace(dd, neighbor_id);
+
+                if (top_candidates.size() > ef) // give up farest result so far
+                  top_candidates.pop();
+
+                if (top_candidates.size())
+                  low_bound = top_candidates.top().first;
               }
             }
           }
-          size_t candL = visited.size() > L ? 0 : L - visited.size();
-          auto temp_candidates = std::make_unique<std::priority_queue<std::pair<float, id_t>>>();
-
-          while (top_candidates->size() && candL--)
-          {
-            auto [d, id] = top_candidates->top();
-            // std::cout << 1212 << std::endl;
-            temp_candidates->push({d, id});
-            // std::cout << 2323 << std::endl;
-            // std::cout << (top_candidates->empty() ? 0 : 1) << std::endl;
-            top_candidates->pop();
-            // std::cout << 3434 << std::endl;
-          }
-          top_candidates->swap(*temp_candidates);
         }
 
-        // sort visited array to get results
-        std::partial_sort(
-            visited.begin(), visited.begin() + k, visited.end(),
-            [](const std::pair<float, id_t> &a, const std::pair<float, id_t> &b)
-            {
-              return a.first > b.first;
-            });
+        while (top_candidates.size() > k)
+        {
+          top_candidates.pop();
+        }
 
-        // visited_list_pool_->ReleaseVisitedList(vl);
         comparison_.fetch_add(comparison);
-      }
-
-      void Search(const vdim_t *query_data, size_t k, size_t L, id_t ep, std::vector<std::pair<float, id_t>> &visited)
-      {
-        assert(L >= k);
-        size_t comparison = 0;
-
-        /// @brief Search top-K NNs in a gready way
-        // visited.clear();
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto visited_set = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-        auto visited_set = std::make_unique<std::vector<bool>>(max_elements_, false);
-        auto top_candidates = std::make_unique<std::priority_queue<std::pair<float, id_t>>>(); /* min-heap to remain the top-L NNs */
-        top_candidates->push({-vec_L2sqr(GetDataByInternalID(ep), query_data, D_), ep});
-        comparison++;
-
-        while (top_candidates->size())
-        {
-          auto [pstar_dist, pstar] = top_candidates->top();
-          visited_set->at(pstar) = true;
-          visited.push_back(top_candidates->top()); // update visited
-          top_candidates->pop();
-
-          /* update L with Nout(p*) */
-          {
-            std::unique_lock<std::mutex> lock(link_list_locks_->at(pstar));
-            size_t *llc = (size_t *)GetLinkByInternalID(pstar);
-            size_t num_neighbors = *llc;
-            id_t *neighbors = (id_t *)(llc + 1);
-            for (size_t i = 0; i < num_neighbors; i++)
-            {
-              id_t neighbor_id = neighbors[i];
-              if (visited_set->at(neighbor_id) == false)
-              {
-                top_candidates->push({-vec_L2sqr(GetDataByInternalID(neighbor_id), query_data, D_), neighbor_id});
-                comparison++;
-              }
-            }
-          }
-
-          size_t candL = visited.size() > L ? 0 : L - visited.size();
-          std::priority_queue<std::pair<float, id_t>> temp_candidates;
-          while (top_candidates->size() && candL--)
-          {
-            temp_candidates.push(top_candidates->top());
-            top_candidates->pop();
-          }
-          top_candidates->swap(temp_candidates);
-
-          comparison_.fetch_add(comparison);
-        }
-
-        // sort visited array to get results
-        std::partial_sort(
-            visited.begin(), visited.begin() + k, visited.end(),
-            [](const std::pair<float, id_t> &a, const std::pair<float, id_t> &b)
-            {
-              return a.first > b.first;
-            });
-
-        // visited_list_pool_->ReleaseVisitedList(vl);
+        return top_candidates;
       }
 
       /// @brief Prune function
       /// @tparam vdim_t
       /// @param node_id
       /// @param alpha
-      /// @param candidates
+      /// @param candidates a minheap
       void RobustPrune(
           id_t node_id,
           float alpha,
-          std::vector<std::pair<float, id_t>> &candidates)
+          std::priority_queue<std::pair<float, id_t>> &candidates)
       {
         assert(alpha >= 1);
-        const vdim_t *data_node = GetDataByInternalID(node_id);
 
         // Ps: It will make a dead-lock if locked here, so make sure the code have locked the link-list of
         // the pruning node outside of the function `RobustPrune` in caller
-        // std::unique_lock < std::mutex > lock( (* link_list_locks_) [node_id] );
-        size_t *llc = (size_t *)GetLinkByInternalID(node_id);
-        size_t num_neighbors = *llc;
-        id_t *neighbors = (id_t *)(llc + 1);
-
-        assert(num_neighbors <= R_);
-
-        for (size_t i = 0; i < num_neighbors; i++)
+        const vdim_t *data_node = GetDataByInternalID(node_id);
+        auto &neighbors = GetLinkByInternalID(node_id);
+        for (id_t nei : neighbors)
         {
-          candidates.push_back({-vec_L2sqr(GetDataByInternalID(neighbors[i]), data_node, D_), neighbors[i]});
+          if (!std::binary_search(delete_list_.begin(), delete_list_.end(), nei))
+          {
+            candidates.emplace(-vec_L2sqr(GetDataByInternalID(nei), data_node, D_), nei);
+          }
         }
-        *llc = 0; // clear link list
 
-        {
+        { // Remove all deduplicated nodes
           std::unordered_set<std::pair<float, id_t>, PHash> cand_set;
-          for (const auto &item : candidates)
+          while (candidates.size())
           {
-            if (item.second != node_id)
+            const auto &top = candidates.top();
+            if (top.second != node_id)
             {
-              cand_set.insert(item);
+              cand_set.insert(top);
             }
+            candidates.pop();
           }
-          candidates.assign(cand_set.begin(), cand_set.end());
+          for (const auto &[d, id] : cand_set)
+          {
+            candidates.emplace(d, id);
+          }
         }
 
-        std::make_heap(candidates.begin(), candidates.end());
-        while (candidates.size())
+        neighbors.clear();        // clear link list
+        while (candidates.size()) // candidates is a minheap, which means that the distance in the candidatas are negtive
         {
-          if (*llc >= R_)
+          if (neighbors.size() >= R_)
             break;
-          auto [pstar_dist, pstar] = candidates.front();
-          // insert p* into Nout(p)
-          neighbors[(*llc)++] = pstar;
-
+          auto [pstar_dist, pstar] = candidates.top();
+          candidates.pop();
+          neighbors.emplace_back(pstar);
           const vdim_t *data_pstar = GetDataByInternalID(pstar);
-          for (size_t i = 0; i < candidates.size();)
+          std::priority_queue<std::pair<float, id_t>> temp;
+          while (candidates.size())
           {
-            auto [d, id] = candidates[i];
+            auto [d, id] = candidates.top();
+            candidates.pop();
             if (alpha * vec_L2sqr(data_pstar, GetDataByInternalID(id), D_) <= -d)
-            {
-              candidates[i] = candidates.back();
-              candidates.pop_back();
-            }
-            else
-            {
-              i++;
-            }
+              continue;
+            temp.emplace(d, id);
           }
-
-          std::make_heap(candidates.begin(), candidates.end());
+          candidates = std::move(temp);
         }
-
-        // std::cout << "prune finished" << std::endl;
       }
 
-      void BuildIndex(
-          const std::vector<vdim_t> &raw_data,
-          float alpha,
-          size_t L)
+      void BuildIndex(const std::vector<vdim_t> &raw_data)
       {
         const size_t num_points = raw_data.size() / D_;
-        // std::cout << num_points << " " << max_elements_ << " " << num_points << std::endl;
-        assert(num_points <= max_elements_ && num_points > 0);
         cur_element_count_ = num_points;
 
-        // omp_set_num_threads(num_threads_);
-// Initialize graph index to a random R-regular directed graph
-#pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
+        vector_data_ = std::make_unique<std::vector<const vdim_t *>>(num_points);
+        neighbors_ = std::make_unique<std::vector<std::vector<id_t>>>(num_points, std::vector<id_t>(R_, -1));
+        link_list_locks_.resize(num_points);
+        std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](std::unique_ptr<std::mutex> &lock)
+                      { lock = std::make_unique<std::mutex>(); });
         for (id_t id = 0; id < num_points; id++)
         {
           WriteDataByInternalID(id, raw_data.data() + id * D_);
-          size_t *ll_cur = (size_t *)GetLinkByInternalID(id);
-          *ll_cur = R_;
-          id_t *neighbors = (id_t *)(ll_cur + 1);
+        }
+
+        // Initialize graph index to a random R-regular directed graph
+#pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
+        for (id_t id = 0; id < num_points; id++)
+        {
+          auto &neighbors = GetLinkByInternalID(id);
           for (size_t i = 0; i < R_; i++)
           {
             id_t rid = id;
@@ -353,25 +266,21 @@ namespace anns
             neighbors[i] = rid;
           }
         }
-        // std::cout << "Initialized graph to a random R-regular directed graph" << std::endl;
-
         // Compute medoid of the raw dataset
         std::vector<long double> dim_sum(D_, .0);
         std::vector<vdim_t> medoid(D_, 0);
         auto dim_lock_list = std::make_unique<std::vector<std::mutex>>(D_);
 
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
           const vdim_t *vec = raw_data.data() + id * D_;
           for (size_t i = 0; i < D_; i++)
           {
-            std::unique_lock<std::mutex> lock((*dim_lock_list)[i]);
+            std::unique_lock<std::mutex> lock(dim_lock_list->at(i));
             dim_sum[i] += vec[i];
           }
         } //
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < D_; i++)
         {
@@ -379,7 +288,7 @@ namespace anns
         }
         float nearest_dist = std::numeric_limits<float>::max();
         id_t nearest_node = -1;
-        // omp_set_num_threads(num_threads_);
+
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
@@ -392,55 +301,48 @@ namespace anns
           }
         }
         enterpoint_node_ = nearest_node;
-        // std::cout << "Computed enterpoint node: " << enterpoint_node_ << std::endl;
 
         // Generate a random permutation sigma
         std::vector<id_t> sigma(num_points);
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
           sigma[id] = id;
         }
         std::random_shuffle(sigma.begin(), sigma.end());
-        // std::cout << "Generated random permutation sigma" << std::endl;
 
         // Building pass begin
         auto pass = [&](float beta)
         {
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
           for (size_t i = 0; i < num_points; i++)
           {
             id_t cur_id = sigma[i];
-            std::vector<std::pair<float, id_t>> top_candidates;
-
-            Search(GetDataByInternalID(cur_id), 1, L, top_candidates);
-
-            std::unique_lock<std::mutex> lock(link_list_locks_->at(cur_id));
-            RobustPrune(cur_id, beta, top_candidates);
-            size_t *llc = (size_t *)GetLinkByInternalID(cur_id);
-            size_t num_neighbors = *llc;
-            id_t *neighbors = (id_t *)(llc + 1);
-            std::vector<id_t> neighbors_copy(neighbors, neighbors + num_neighbors);
-            lock.unlock();
-            if (num_neighbors > R_)
-            {
-              std::cerr << num_neighbors << " " << R_ << std::endl;
-            }
-
-            for (size_t j = 0; j < num_neighbors; j++)
-            {
-              id_t neij = neighbors_copy[j];
-              std::unique_lock<std::mutex> lock_neij(link_list_locks_->at(neij));
-              size_t *llc_other = (size_t *)GetLinkByInternalID(neij);
-              size_t num_neighbors_other = *llc_other;
-              id_t *neighbors_other = (id_t *)(llc_other + 1);
-
-              bool find_cur_id = false;
-              for (size_t k = 0; k < num_neighbors_other; k++)
+            auto top_candidates = SearchBaseLayer(GetDataByInternalID(cur_id), R_, Lc_); // output is a maxheap containing results
+            {                                                                            // transform to minheap
+              std::priority_queue<std::pair<float, id_t>> temp;
+              while (top_candidates.size())
               {
-                if (cur_id == neighbors_other[k])
+                const auto &[d, id] = top_candidates.top();
+                temp.emplace(-d, id);
+                top_candidates.pop();
+              }
+              top_candidates = std::move(temp);
+            }
+            std::unique_lock<std::mutex> lock(*link_list_locks_[cur_id]);
+            RobustPrune(cur_id, beta, top_candidates);
+            auto &neighbors = GetLinkByInternalID(cur_id);
+            std::vector<id_t> neighbors_copy(neighbors);
+            lock.unlock();
+
+            for (id_t neij : neighbors_copy)
+            {
+              std::unique_lock<std::mutex> lock_neij(*link_list_locks_[neij]);
+              auto &neighbors_other = GetLinkByInternalID(neij);
+              bool find_cur_id = false;
+              for (id_t idno : neighbors_other)
+              {
+                if (cur_id == idno)
                 {
                   find_cur_id = true;
                   break;
@@ -449,15 +351,15 @@ namespace anns
 
               if (!find_cur_id)
               {
-                if (num_neighbors_other == R_)
+                if (neighbors_other.size() == R_)
                 {
-                  std::vector<std::pair<float, id_t>> temp_cand_set = {{-vec_L2sqr(GetDataByInternalID(neij), GetDataByInternalID(cur_id), D_), cur_id}};
+                  std::priority_queue<std::pair<float, id_t>> temp_cand_set;
+                  temp_cand_set.emplace(-vec_L2sqr(GetDataByInternalID(neij), GetDataByInternalID(cur_id), D_), cur_id);
                   RobustPrune(neij, beta, temp_cand_set);
                 }
-                else if (num_neighbors_other < R_)
+                else if (neighbors_other.size() < R_)
                 {
-                  neighbors_other[num_neighbors_other] = cur_id;
-                  (*llc_other)++;
+                  neighbors_other.emplace_back(cur_id);
                 }
                 else
                 {
@@ -470,32 +372,26 @@ namespace anns
 
         /// First pass with alpha = 1.0
         pass(1.0);
-        // std::cout << "First pass done!" << std::endl;
         /// Second pass with user-defined alpha
-        pass(alpha);
-        // std::cout << "Second pass done!" << std::endl;
-
-        ready_ = true;
+        pass(alpha_);
       }
 
-      void BuildIndex(
-          const std::vector<const vdim_t *> &raw_data,
-          float alpha,
-          size_t L)
+      void BuildIndex(const std::vector<const vdim_t *> &raw_data)
       {
-        const size_t num_points = raw_data.size();
-        assert(num_points <= max_elements_ && num_points > 0);
+        const size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
 
+        vector_data_ = std::make_unique<std::vector<const vdim_t *>>(raw_data);
+        neighbors_ = std::make_unique<std::vector<std::vector<id_t>>>(num_points, std::vector<id_t>(R_, -1));
+        link_list_locks_.resize(num_points);
+        std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](std::unique_ptr<std::mutex> &lock)
+                      { lock = std::make_unique<std::mutex>(); });
+
         // Initialize graph index to a random R-regular directed graph
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
-          WriteDataByInternalID(id, raw_data[id]);
-          size_t *ll_cur = (size_t *)GetLinkByInternalID(id);
-          *ll_cur = R_;
-          id_t *neighbors = (id_t *)(ll_cur + 1);
+          auto &neighbors = GetLinkByInternalID(id);
           for (size_t i = 0; i < R_; i++)
           {
             id_t rid = id;
@@ -506,24 +402,21 @@ namespace anns
             neighbors[i] = rid;
           }
         }
-        // std::cout << "Initialized graph to a random R-regular directed graph" << std::endl;
-
         // Compute medoid of the raw dataset
         std::vector<long double> dim_sum(D_, .0);
         std::vector<vdim_t> medoid(D_, 0);
         auto dim_lock_list = std::make_unique<std::vector<std::mutex>>(D_);
-        // omp_set_num_threads(num_threads_);
+
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
           const vdim_t *vec = raw_data[id];
           for (size_t i = 0; i < D_; i++)
           {
-            std::unique_lock<std::mutex> lock((*dim_lock_list)[i]);
+            std::unique_lock<std::mutex> lock(dim_lock_list->at(i));
             dim_sum[i] += vec[i];
           }
         } //
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < D_; i++)
         {
@@ -531,7 +424,7 @@ namespace anns
         }
         float nearest_dist = std::numeric_limits<float>::max();
         id_t nearest_node = -1;
-        // omp_set_num_threads(num_threads_);
+
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
@@ -544,53 +437,49 @@ namespace anns
           }
         }
         enterpoint_node_ = nearest_node;
-        // std::cout << "Computed enterpoint node: " << enterpoint_node_ << std::endl;
 
         // Generate a random permutation sigma
         std::vector<id_t> sigma(num_points);
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
           sigma[id] = id;
         }
         std::random_shuffle(sigma.begin(), sigma.end());
-        // std::cout << "Generated random permutation sigma" << std::endl;
 
         // Building pass begin
         auto pass = [&](float beta)
         {
-        // omp_set_num_threads(num_threads_);
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
           for (size_t i = 0; i < num_points; i++)
           {
             id_t cur_id = sigma[i];
-            auto top_candidates = std::make_unique<std::vector<std::pair<float, id_t>>>();
-            // GetDataByInternalID(cur_id);
-            Search(GetDataByInternalID(cur_id), 1, L, *top_candidates);
-            std::unique_lock<std::mutex> lock(link_list_locks_->at(cur_id));
-            RobustPrune(cur_id, beta, *top_candidates);
-            size_t *llc = (size_t *)GetLinkByInternalID(cur_id);
-            size_t num_neighbors = *llc;
-            id_t *neighbors = (id_t *)(llc + 1);
-            std::vector<id_t> neighbors_copy(neighbors, neighbors + num_neighbors);
-            lock.unlock();
-            if (num_neighbors > R_)
-            {
-              std::cerr << num_neighbors << " " << R_ << std::endl;
-            }
-            for (size_t j = 0; j < num_neighbors; j++)
-            {
-              id_t neij = neighbors_copy[j];
-              std::unique_lock<std::mutex> lock_neij(link_list_locks_->at(neij));
-              size_t *llc_other = (size_t *)GetLinkByInternalID(neij);
-              size_t num_neighbors_other = *llc_other;
-              id_t *neighbors_other = (id_t *)(llc_other + 1);
-
-              bool find_cur_id = false;
-              for (size_t k = 0; k < num_neighbors_other; k++)
+            auto top_candidates = SearchBaseLayer(GetDataByInternalID(cur_id), R_, Lc_);
+            { // transform to minheap
+              std::priority_queue<std::pair<float, id_t>> temp;
+              while (top_candidates.size())
               {
-                if (cur_id == neighbors_other[k])
+                const auto &[d, id] = top_candidates.top();
+                temp.emplace(-d, id);
+                top_candidates.pop();
+              }
+              top_candidates = std::move(temp);
+            }
+
+            std::unique_lock<std::mutex> lock(*link_list_locks_[cur_id]);
+            RobustPrune(cur_id, beta, top_candidates);
+            auto &neighbors = GetLinkByInternalID(cur_id);
+            std::vector<id_t> neighbors_copy(neighbors);
+            lock.unlock();
+
+            for (id_t neij : neighbors_copy)
+            {
+              std::unique_lock<std::mutex> lock_neij(*link_list_locks_[neij]);
+              auto &neighbors_other = GetLinkByInternalID(neij);
+              bool find_cur_id = false;
+              for (id_t idno : neighbors_other)
+              {
+                if (cur_id == idno)
                 {
                   find_cur_id = true;
                   break;
@@ -599,15 +488,15 @@ namespace anns
 
               if (!find_cur_id)
               {
-                if (num_neighbors_other == R_)
+                if (neighbors_other.size() == R_)
                 {
-                  std::vector<std::pair<float, id_t>> temp_cand_set = {{-vec_L2sqr(GetDataByInternalID(neij), GetDataByInternalID(cur_id), D_), cur_id}};
+                  std::priority_queue<std::pair<float, id_t>> temp_cand_set;
+                  temp_cand_set.emplace(-vec_L2sqr(GetDataByInternalID(neij), GetDataByInternalID(cur_id), D_), cur_id);
                   RobustPrune(neij, beta, temp_cand_set);
                 }
-                else if (num_neighbors_other < R_)
+                else if (neighbors_other.size() < R_)
                 {
-                  neighbors_other[num_neighbors_other] = cur_id;
-                  (*llc_other)++;
+                  neighbors_other.emplace_back(cur_id);
                 }
                 else
                 {
@@ -620,59 +509,47 @@ namespace anns
 
         /// First pass with alpha = 1.0
         pass(1.0);
-        // std::cout << "First pass done!" << std::endl;
+        // std::cout << "First pass done" << std::endl;
         /// Second pass with user-defined alpha
-        pass(alpha);
-        // std::cout << "Second pass done!" << std::endl;
-
-        ready_ = true;
+        pass(alpha_);
+        // std::cout << "Second pass done" << std::endl;
       }
 
       void Search(
-          const std::vector<std::vector<vdim_t>> &queries, size_t k, size_t L,
-          std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
+          const std::vector<std::vector<vdim_t>> &queries,
+          size_t k,
+          size_t ef,
+          std::vector<std::vector<id_t>> &knn,
+          std::vector<std::vector<float>> &dists)
       {
-        const size_t nq = queries.size();
-        vids.clear();
+
+        size_t nq = queries.size();
+        knn.clear();
         dists.clear();
-        vids.resize(nq);
+        knn.resize(nq);
         dists.resize(nq);
-        // omp_set_num_threads(num_threads_);
+
+        std::sort(delete_list_.begin(), delete_list_.end()); // for binary search
+
 #pragma omp parallel for schedule(dynamic, 64) num_threads(num_threads_)
         for (size_t i = 0; i < nq; i++)
         {
-          // std::cerr << "query " << i << " finished" << std::endl;
-
           const auto &query = queries[i];
-          auto &vid = vids[i];
+          auto &vid = knn[i];
           auto &dist = dists[i];
-
-          auto results = std::make_unique<std::vector<std::pair<float, id_t>>>();
-          Search(query.data(), k, L, *results);
-
-          // std::cerr << results.size() << std::endl;
-          size_t actual_k = std::min(k, results->size());
-          results->resize(actual_k);
-          results->shrink_to_fit();
-          vid.reserve(actual_k);
-          dist.reserve(actual_k);
-
-          for (const auto &[d, id] : *results)
+          auto r = SearchBaseLayer(query.data(), k, ef);
+          while (r.size())
           {
-            vid.push_back(id);
-            dist.push_back(-d);
-            // std::cout << id << " -> " << -d << std::endl;
+            const auto &tt = r.top();
+            if (!std::binary_search(delete_list_.begin(), delete_list_.end(), tt.second))
+            {
+              vid.emplace_back(tt.second);
+              dist.emplace_back(tt.first);
+            }
+            r.pop();
           }
         }
       }
-
-      //
-      // void SaveDiskANN(const std::string &info_path, const std::string &edge_path, const std::string &data_path)
-      // {
-      //   SaveInfo(info_path);
-      //   SaveData(data_path);
-      //   SaveEdges(edge_path);
-      // }
 
       size_t GetComparisonAndClear()
       {
@@ -681,7 +558,11 @@ namespace anns
 
       size_t IndexSize() const
       {
-        size_t sz = data_memory_->size() * sizeof(char);
+        size_t sz = 0;
+        for (const auto &ll : *neighbors_)
+        {
+          sz += ll.size() * sizeof(id_t);
+        }
         return sz;
       }
 
@@ -699,9 +580,8 @@ namespace anns
         while (moving)
         {
           moving = false;
-          size_t *ll = (size_t *)GetLinkByInternalID(wander);
-          size_t n = *ll;
-          id_t *adj = (id_t *)(ll + 1);
+          auto &adj = GetLinkByInternalID(wander);
+          size_t n = adj.size();
           for (size_t i = 0; i < n; i++)
           {
             id_t cand = adj[i];
@@ -719,120 +599,139 @@ namespace anns
         return wander;
       }
 
-      std::vector<float> GetSearchLength(const vdim_t *query_data, size_t k, size_t L, std::vector<std::pair<float, id_t>> &visited)
+      // This method support insert vectors in the way of parallel, however with different sequence of insertion,
+      // the result variant graph may be different.
+      void Insert(const vdim_t *data)
       {
-        std::vector<float> length;
-        // static const size_t rb = 2;
-        assert(L >= k);
+        // std::cout << "Inserting a new vector" << std::endl;
+        id_t cur_id = AllocFreeVectorSpace(data); // return a free vector id
+        // std::cout << "cur_id " << cur_id << std::endl;
+        auto candidates = Search(data, 1, Lc_);
+        std::unique_lock<std::mutex> lock(*link_list_locks_[cur_id]);
+        RobustPrune(cur_id, alpha_, candidates);
+        auto &neighbors = GetLinkByInternalID(cur_id);
+        size_t num_neighbors = neighbors.size();
+        std::vector<id_t> neighbors_copy(neighbors);
+        lock.unlock();
 
-        size_t comparison = 0;
-
-        /// @brief Search top-K NNs in a gready way
-        // visited.clear();
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto visited_set = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-        auto visited_set = std::make_unique<std::vector<bool>>(max_elements_, false);
-        std::priority_queue<std::pair<float, id_t>> top_candidates; /* min-heap to remain the top-L NNs */
-        id_t ep = 0;
-        top_candidates.push({-vec_L2sqr(GetDataByInternalID(ep), query_data, D_), ep});
-        comparison++;
-
-        while (top_candidates.size())
+        for (size_t j = 0; j < num_neighbors; j++)
         {
-          auto [pstar_dist, pstar] = top_candidates.top();
-          length.push_back(-pstar_dist);
-          // std::cout << "pstar_dist: " << -pstar_dist << ", pstar: " << pstar << std::endl;
-          // visited_set[pstar] = curr_visited;          // update visited_set
-          visited_set->at(pstar) = true;
-          visited.push_back(top_candidates.top()); // update visited
-          top_candidates.pop();
-
+          id_t neij = neighbors_copy[j];
+          std::unique_lock<std::mutex> lock_neij(*link_list_locks_[neij]);
+          auto &neighbors_other = GetLinkByInternalID(neij);
+          size_t num_neighbors_other = neighbors_other.size();
+          bool find_cur_id = false;
+          for (size_t k = 0; k < num_neighbors_other; k++)
           {
-            std::unique_lock<std::mutex> lock((*link_list_locks_)[pstar]);
-            size_t *llc = (size_t *)GetLinkByInternalID(pstar);
-            size_t num_neighbors = *llc;
-            id_t *neighbors = (id_t *)(llc + 1);
-            for (size_t i = 0; i < num_neighbors; i++)
+            if (cur_id == neighbors_other[k])
             {
-              id_t neighbor_id = neighbors[i];
-              // std::cout << "neighbor_id: " << neighbor_id << std::endl;
-              if (visited_set->at(neighbor_id) == false)
-              {
-                top_candidates.push({-vec_L2sqr(GetDataByInternalID(neighbor_id), query_data, D_), neighbor_id});
-                comparison++;
-              }
+              find_cur_id = true;
+              break;
             }
           }
 
-          size_t candL = visited.size() > L ? 0 : L - visited.size();
-          // std::cout << candL << std::endl;
-          std::priority_queue<std::pair<float, id_t>> temp_candidates;
-          while (candL--)
+          if (!find_cur_id)
           {
-            temp_candidates.push(top_candidates.top());
-            top_candidates.pop();
-          }
-          top_candidates.swap(temp_candidates);
-        }
-
-        // sort visited array to get results
-        std::partial_sort(
-            visited.begin(), visited.begin() + k, visited.end(),
-            [](const std::pair<float, id_t> &a, const std::pair<float, id_t> &b)
+            if (num_neighbors_other == R_)
             {
-              return a.first > b.first;
-            });
-
-        // visited_list_pool_->ReleaseVisitedList(vl);
-        comparison_.fetch_add(comparison);
-
-        return length;
+              std::priority_queue<std::pair<float, id_t>> temp_cand_set;
+              temp_cand_set.emplace(-vec_L2sqr(GetDataByInternalID(neij), GetDataByInternalID(cur_id), D_), cur_id);
+              RobustPrune(neij, alpha_, temp_cand_set);
+            }
+            else if (num_neighbors_other < R_)
+            {
+              neighbors_other.emplace_back(cur_id);
+            }
+            else
+            {
+              throw std::runtime_error("adjency overflow");
+            }
+          }
+        }
       }
 
-      std::vector<std::vector<float>> GetSearchLength(
-          const std::vector<std::vector<vdim_t>> &queries, size_t k, size_t L,
-          std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
+      id_t AllocFreeVectorSpace(const vdim_t *data)
       {
-        const size_t nq = queries.size();
-        vids.clear();
-        dists.clear();
-        vids.resize(nq);
-        dists.resize(nq);
-        std::vector<std::vector<float>> lengths(nq);
-        // omp_set_num_threads(num_threads_);
-#pragma omp parallel for schedule(dynamic, 64) num_threads(num_threads_)
-        for (size_t i = 0; i < nq; i++)
+        std::unique_lock<std::mutex> glock(global_);
+        // std::cout << "free ids size " << free_ids_.size() << std::endl;
+        if (free_ids_.size())
         {
-          // std::cerr << "query " << i << " finished" << std::endl;
+          id_t id = -free_ids_.top();
+          free_ids_.pop();
+          vector_data_->at(id) = data;
+          return id;
+        }
+        vector_data_->emplace_back(data);
+        neighbors_->emplace_back(std::vector<id_t>());
+        link_list_locks_.emplace_back(std::unique_ptr<std::mutex>(new std::mutex));
+        return cur_element_count_++;
+      }
 
-          const auto &query = queries[i];
-          auto &vid = vids[i];
-          auto &dist = dists[i];
+      // User should not call this function in any parallel operation of deletion
+      void Delete(id_t id)
+      {
+        // std::cout << "delete " << id << std::endl;
+        if (neighbors_->at(id).size() == 0)
+          return;
 
-          std::vector<std::pair<float, id_t>> results;
-          lengths[i] = GetSearchLength(query.data(), k, L, results);
+        while (id == enterpoint_node_ || neighbors_->at(enterpoint_node_).size() == 0)
+          enterpoint_node_++;
+        delete_list_.emplace_back(id);
+        free_ids_.push(-id); // push the id into the free list
+        if (delete_list_.size() >= Ld_)
+        {
+          ConsolidateDelete();
+        }
+      }
 
-          // std::cerr << results.size() << std::endl;
-          size_t actual_k = std::min(k, results.size());
-          results.resize(actual_k);
-          results.shrink_to_fit();
-          vid.reserve(actual_k);
-          dist.reserve(actual_k);
+      // User should not call this function in any parallel operation of deletion
+      void ConsolidateDelete()
+      {
+        // std::cout << "consolidate delete" << std::endl;
+        std::sort(delete_list_.begin(), delete_list_.end());
 
-          for (const auto &[d, id] : results)
+#pragma omp parallel for num_threads(num_threads_)
+        for (id_t id = 0; id < cur_element_count_; id++)
+        {
+          if (!std::binary_search(delete_list_.begin(), delete_list_.end(), id))
           {
-            vid.push_back(id);
-            dist.push_back(-d);
-            // std::cout << id << " -> " << -d << std::endl;
+            bool adjust = 0;
+            const auto &neighbors = GetLinkByInternalID(id);
+            for (id_t nei : neighbors)
+            {
+              if (std::binary_search(delete_list_.begin(), delete_list_.end(), nei))
+              {
+                adjust = 1;
+                break;
+              }
+            }
+            if (!adjust) // If there is no deleted nodes in the neighbors, we do not need to adjust the adjacency list
+              continue;
+
+            std::priority_queue<std::pair<float, id_t>> candidates;
+            const vdim_t *vec = GetDataByInternalID(id);
+            for (id_t did : delete_list_)
+            {
+              const auto &neighbors_other = GetLinkByInternalID(did);
+              for (id_t nei : neighbors_other)
+              {
+                if (!std::binary_search(delete_list_.begin(), delete_list_.end(), nei))
+                {
+                  candidates.emplace(-vec_L2sqr(vec, GetDataByInternalID(nei), D_), nei);
+                }
+              }
+            }
+            RobustPrune(id, alpha_, candidates);
           }
         }
-
-        return lengths;
+        // Clear all delete node
+        for (id_t id : delete_list_)
+        {
+          neighbors_->at(id).clear();
+        }
+        delete_list_.clear();
       }
     };
-
-    // template class DiskANN<int32_t>;
 
   } // namespace graph
 

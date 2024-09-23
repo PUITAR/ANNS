@@ -1,20 +1,17 @@
 #pragma once
 
 #include <vector_ops.hpp>
-
 #include <random>
 #include <iostream>
 #include <fstream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
-// #include <unordered_map>
 #include <unordered_set>
 #include <map>
 #include <cmath>
 #include <queue>
 #include <memory>
-// #include <quantizer.hpp>
 
 #ifdef _MSC_VER
 #include <immintrin.h>
@@ -24,12 +21,11 @@
 
 #include <atomic>
 #include <mutex>
-#include <graph/disjoint_set.hpp>
 #include <omp.h>
 #include <algorithm>
 #include <memory>
 
-#include <utils/binary_io.hpp>
+#include <utils/binary.hpp>
 #include <utils/stimer.hpp>
 
 namespace anns
@@ -37,6 +33,33 @@ namespace anns
 
   namespace graph
   {
+
+    class DisjointSet
+    {
+
+    public:
+      DisjointSet(size_t size)
+      {
+        parent.resize(size);
+        for (size_t i = 0; i < size; ++i)
+          parent[i] = i;
+      }
+
+      id_t Find(id_t x)
+      {
+        if (parent[x] != x)
+          parent[x] = Find(parent[x]);
+        return parent[x];
+      }
+
+      void UnionSet(id_t x, id_t y)
+      {
+        parent[Find(x)] = Find(y);
+      }
+
+    private:
+      std::vector<id_t> parent;
+    };
 
     struct Edge
     {
@@ -50,29 +73,21 @@ namespace anns
       }
     };
 
-    template <typename vdim_t> class HCNNG
+    template <typename vdim_t>
+    class HCNNG
     {
 
     public:
       size_t max_elements_{0};
       size_t cur_element_count_{0};
       size_t data_size_{0};
-
       size_t D_;
-
       std::vector<const vdim_t *> data_memory_;
       std::vector<std::vector<id_t>> adj_memory_;
-
       bool ready_{false};
-
       size_t num_threads_{1};
-
       int random_seed_{100};
-
-      // std::unique_ptr<VisitedListPool> visited_list_pool_{nullptr};
-
       std::unique_ptr<std::vector<std::mutex>> link_list_locks_{nullptr};
-
       std::atomic<size_t> comparison_{0};
 
       HCNNG(
@@ -81,15 +96,9 @@ namespace anns
           int random_seed = 123) : D_(D), max_elements_(max_elements), random_seed_(random_seed)
       {
         data_size_ = D_ * sizeof(vdim_t);
-
         data_memory_.resize(max_elements_);
-        // assert(mlock(data_memory_.data(), data_memory_.size()) == 0);
         adj_memory_.resize(max_elements_);
-
         cur_element_count_ = 0;
-
-        // visited_list_pool_ = std::make_unique<VisitedListPool>(1, max_elements_);
-
         link_list_locks_ = std::make_unique<std::vector<std::mutex>>(max_elements_);
       }
 
@@ -109,14 +118,11 @@ namespace anns
 
       bool Ready() const { return ready_; }
 
-      std::vector<std::vector<Edge>>
-      CreateExactMST(
+      std::vector<std::vector<Edge>> CreateExactMST(
           const std::vector<id_t> &idx_points,
           size_t left, size_t right, size_t max_mst_degree)
       {
         size_t num_points = right - left + 1;
-
-        // float cost = 0;
         std::vector<Edge> full_graph;
         std::vector<std::vector<Edge>> mst(num_points);
         full_graph.reserve(num_points * (num_points - 1));
@@ -129,11 +135,7 @@ namespace anns
             if (i != j)
             {
               full_graph.emplace_back(
-                  Edge{i, j,
-                       vec_L2sqr(
-                           GetDataByInternalID(idx_points[left + i]),
-                           GetDataByInternalID(idx_points[left + j]),
-                           D_)});
+                  Edge{i, j, vec_L2sqr(GetDataByInternalID(idx_points[left + i]), GetDataByInternalID(idx_points[left + j]), D_)});
             }
           }
         }
@@ -151,7 +153,6 @@ namespace anns
             mst[src].emplace_back(e);
             mst[dst].emplace_back(Edge{dst, src, weight});
             ds->UnionSet(src, dst);
-            // cost += weight;
           }
         }
 
@@ -178,15 +179,11 @@ namespace anns
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < num_random_clusters; i++)
         {
-          // std::cout << "building mst: " << i << "/" << num_random_clusters << std::endl;
-
           auto idx_points = std::make_unique<std::vector<id_t>>(num_points);
-
           for (size_t j = 0; j < num_points; j++)
           {
             idx_points->at(j) = j;
           }
-
           CreateClusters(*idx_points, 0, num_points - 1, min_size_clusters, max_mst_degree);
         }
 
@@ -213,15 +210,11 @@ namespace anns
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < num_random_clusters; i++)
         {
-          // std::cout << "building mst: " << i << "/" << num_random_clusters << std::endl;
-
           auto idx_points = std::make_unique<std::vector<id_t>>(num_points);
-
           for (size_t j = 0; j < num_points; j++)
           {
             idx_points->at(j) = j;
           }
-
           CreateClusters(*idx_points, 0, num_points - 1, min_size_clusters, max_mst_degree);
         }
 
@@ -235,11 +228,8 @@ namespace anns
           size_t max_mst_degree)
       {
         size_t num_points = right - left + 1;
-        // std::cout << "hierarchical clustering, N = " << num_points << std::endl;
-
         if (num_points <= min_size_clusters)
         {
-          // std::cout << "come to leaf !" << std::endl;
           auto mst = CreateExactMST(idx_points, left, right, max_mst_degree);
 
           // Add edges to graph
@@ -334,15 +324,8 @@ namespace anns
           std::priority_queue<std::pair<float, id_t>> &result)
       {
         assert(ef >= k);
-
         size_t comparison = 0;
-
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto visited_set = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-
         auto visited_set = std::make_unique<std::vector<bool>>(max_elements_, false);
-
         id_t ep = rand() % cur_element_count_;
         std::priority_queue<std::pair<float, id_t>> top_candidates;
 
@@ -354,8 +337,6 @@ namespace anns
         while (top_candidates.size())
         {
           auto [pstar_dist, pstar] = top_candidates.top();
-
-          // visited_set[pstar] = curr_visited;          // update visited_set
           visited_set->at(pstar) = true;
           result.emplace(-pstar_dist, pstar);
           top_candidates.pop();
@@ -369,9 +350,7 @@ namespace anns
               id_t neighbor_id = neighbors[i];
               if (visited_set->at(neighbor_id) == false)
               {
-                top_candidates.emplace(
-                    -vec_L2sqr(GetDataByInternalID(neighbor_id), query, D_),
-                    neighbor_id);
+                top_candidates.emplace(-vec_L2sqr(GetDataByInternalID(neighbor_id), query, D_), neighbor_id);
                 comparison++;
               }
             }
@@ -390,7 +369,6 @@ namespace anns
         while (result.size() > k)
           result.pop();
 
-        // visited_list_pool_->ReleaseVisitedList(vl);
         comparison_.fetch_add(comparison);
       }
 
@@ -401,29 +379,16 @@ namespace anns
           id_t ep,
           std::priority_queue<std::pair<float, id_t>> &result)
       {
-
         assert(ef >= k);
-
         size_t comparison = 0;
-
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto visited_set = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-
         auto visited_set = std::make_unique<std::vector<bool>>(max_elements_, false);
-
         std::priority_queue<std::pair<float, id_t>> top_candidates;
-
-        top_candidates.emplace(
-            -vec_L2sqr(GetDataByInternalID(ep), query, D_),
-            ep);
+        top_candidates.emplace(-vec_L2sqr(GetDataByInternalID(ep), query, D_), ep);
         comparison++;
 
         while (top_candidates.size())
         {
           auto [pstar_dist, pstar] = top_candidates.top();
-
-          // visited_set[pstar] = curr_visited;          // update visited_set
           visited_set->at(pstar) = true;
           result.emplace(-pstar_dist, pstar);
           top_candidates.pop();
@@ -458,7 +423,6 @@ namespace anns
         while (result.size() > k)
           result.pop();
 
-        // visited_list_pool_->ReleaseVisitedList(vl);
         comparison_.fetch_add(comparison);
       }
 
@@ -478,17 +442,12 @@ namespace anns
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < nq; i++)
         {
-          // std::cout << i << std::endl;
           const auto &query = queries[i];
           auto &vid = vids[i];
           auto &dist = dists[i];
 
           std::priority_queue<std::pair<float, id_t>> results;
           Search(query.data(), k, ef, results);
-          // size_t actual_k = std::min(k, results.size());
-
-          // while (results.size() > actual_k)
-          //   results.pop();
 
           vid.reserve(k);
           dist.reserve(k);
@@ -538,16 +497,6 @@ namespace anns
         }
       }
 
-      //
-      // void SaveHCNNG(
-      //     const std::string &info_path, const std::string &edge_path, const std::string &data_path)
-      // {
-
-      //   SaveInfo(info_path);
-      //   SaveData(data_path);
-      //   SaveEdges(edge_path);
-      // }
-
       size_t GetComparisonAndClear()
       {
         return comparison_.exchange(0);
@@ -556,7 +505,6 @@ namespace anns
       size_t IndexSize() const
       {
         size_t sz = 0;
-        // sz += cur_element_count_ * D_ * sizeof(vdim_t); // vector data
         for (id_t id = 0; id < cur_element_count_; id++)
         { // adj list
           sz += adj_memory_[id].size() * sizeof(id_t);
@@ -606,32 +554,19 @@ namespace anns
           std::priority_queue<std::pair<float, id_t>> &result)
       {
         assert(ef >= k);
-
         std::vector<float> length;
-
         size_t comparison = 0;
-
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto visited_set = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-
         auto visited_set = std::make_unique<std::vector<bool>>(max_elements_, false);
-
         id_t ep = 0;
         std::priority_queue<std::pair<float, id_t>> top_candidates;
 
-        top_candidates.emplace(
-            -vec_L2sqr(GetDataByInternalID(ep), query, D_),
-            ep);
+        top_candidates.emplace(-vec_L2sqr(GetDataByInternalID(ep), query, D_), ep);
         comparison++;
 
         while (top_candidates.size())
         {
           auto [pstar_dist, pstar] = top_candidates.top();
-
           length.emplace_back(-pstar_dist);
-
-          // visited_set[pstar] = curr_visited;          // update visited_set
           visited_set->at(pstar) = true;
           result.emplace(-pstar_dist, pstar);
           top_candidates.pop();
@@ -666,7 +601,6 @@ namespace anns
         while (result.size() > k)
           result.pop();
 
-        // visited_list_pool_->ReleaseVisitedList(vl);
         comparison_.fetch_add(comparison);
 
         return length;
@@ -691,17 +625,12 @@ namespace anns
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < nq; i++)
         {
-          // std::cout << i << std::endl;
           const auto &query = queries[i];
           auto &vid = vids[i];
           auto &dist = dists[i];
 
           std::priority_queue<std::pair<float, id_t>> results;
           lengths[i] = GetSearchLength(query.data(), k, ef, results);
-          // size_t actual_k = std::min(k, results.size());
-
-          // while (results.size() > actual_k)
-          //   results.pop();
 
           vid.reserve(k);
           dist.reserve(k);

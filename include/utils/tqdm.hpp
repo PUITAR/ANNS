@@ -1,5 +1,4 @@
-#ifndef INCLUDE_TQDM_HPP
-#define INCLUDE_TQDM_HPP
+#pragma once
 
 #include <string>
 #include <iostream>
@@ -68,6 +67,4 @@ namespace utils
         }
     };
 
-} // namespace utils
-
-#endif
+}

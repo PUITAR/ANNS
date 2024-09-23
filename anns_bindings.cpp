@@ -12,7 +12,7 @@ using namespace anns::graph;
 
 
 PYBIND11_MODULE(anns, m) {
-     
+
   m.doc() = "CSPG's Python APIs";
 
   using rpg_diskann_float_t = RandomPartitionGraph<float, DiskANN<float>>;

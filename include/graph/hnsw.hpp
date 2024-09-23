@@ -1,9 +1,6 @@
 #pragma once
 
-// #include <index_status.hpp>
-// #include <graph/visited_list_pool.hpp>
 #include <vector_ops.hpp>
-
 #include <random>
 #include <iostream>
 #include <fstream>
@@ -17,15 +14,11 @@
 #include <queue>
 #include <memory>
 #include <mutex>
-
 #include <atomic>
-
 #include <utils/binary_io.hpp>
 #include <utils/stimer.hpp>
-
 #include <algorithm>
 #include <stdexcept>
-
 #include <omp.h>
 
 #ifdef _MSC_VER
@@ -49,43 +42,27 @@ namespace anns
       size_t cur_element_count_{0};
       size_t size_data_per_element_{0};
       size_t size_links_per_element_{0};
-
       size_t M_{0};     // number of established connections, suggest let M between 8 and 32
       size_t Mmax_{0};  // maximum number of connections for each element per layer
       size_t Mmax0_{0}; // maximum number of connections for each element in layer0
-
       size_t ef_construction_{0}; // usually been set to 128
-
       double mult_{0.0};
       double rev_size_{0.0};
       int max_level_{0};
-
-      // std::unique_ptr<VisitedListPool> visited_list_pool_{nullptr};
-
       std::mutex global_;
       std::unique_ptr<std::vector<std::mutex>> link_list_locks_;
-
       id_t enterpoint_node_{0};
-
       size_t size_links_level0_{0};
       size_t offset_data_{0};
-
       std::vector<char> data_level0_memory_; // vector data start pointer of memory.
       std::vector<std::vector<char>> link_lists_;
       std::vector<int> element_levels_; // keeps level of each element
-
       size_t data_size_{0};
       size_t D_{0}; // vector dimensions
-
       std::default_random_engine level_generator_;
       int random_seed_{100};
-
       bool ready_{false};
-
       size_t num_threads_{1};
-
-      // bool mlock_{false};
-
       std::atomic<size_t> comparison_{0};
 
       HNSW(
@@ -94,36 +71,23 @@ namespace anns
           size_t M = 16, // [8, 32]
           size_t ef_construction = 128,
           size_t random_seed = 123) :
-
-                                      D_(D), max_elements_(max_elements), M_(M), Mmax_(M), Mmax0_(2 * M),
-                                      ef_construction_(std::max(ef_construction, M)), random_seed_(random_seed), element_levels_(max_elements)
+            D_(D), max_elements_(max_elements), M_(M), Mmax_(M), Mmax0_(2 * M),
+            ef_construction_(std::max(ef_construction, M)), random_seed_(random_seed), element_levels_(max_elements)
       {
         // random seed
         level_generator_.seed(random_seed);
-
         data_size_ = D * sizeof(vdim_t);
         size_links_level0_ = Mmax0_ * sizeof(id_t) + sizeof(size_t);
         size_data_per_element_ = size_links_level0_ + sizeof(vdim_t *);
         offset_data_ = size_links_level0_;
-        // offset_level0_ = 0;
-
-        // std::cout << "Size GB: " << (1.0 * max_elements_ * size_data_per_element_ / (1024 * 1024 * 1024)) << std::endl;
         data_level0_memory_.resize(max_elements_ * size_data_per_element_, 0x00);
-
         cur_element_count_ = 0;
-
-        // visited_list_pool_ = std::make_unique<VisitedListPool>(1, max_elements_);
-
-        // initializations for special treatment of the first node
         enterpoint_node_ = -1;
         max_level_ = -1;
-
         link_lists_.resize(max_elements);
         link_list_locks_ = std::make_unique<std::vector<std::mutex>>(max_elements_);
         element_levels_.resize(max_elements, -1);
-
         size_links_per_element_ = Mmax_ * sizeof(id_t) + sizeof(size_t);
-
         mult_ = 1 / log(1.0 * M_);
         rev_size_ = 1.0 / mult_;
       }
@@ -144,17 +108,13 @@ namespace anns
         }
 
         std::unique_lock<std::mutex> lock_el((*link_list_locks_)[cur_id]);
-
         int cur_level = GetRandomLevel(mult_);
-
         element_levels_[cur_id] = cur_level;
-
         std::unique_lock<std::mutex> temp_lock(global_);
         int max_level_copy = max_level_;
         id_t cur_obj = enterpoint_node_;
         id_t enterpoint_node_copy = enterpoint_node_;
-        if (cur_level <= max_level_)
-          temp_lock.unlock();
+        if (cur_level <= max_level_) temp_lock.unlock();
 
         // Clear edge-slot and copy vector into graph buffer.
         WriteDataByInternalID(cur_id, data_point);
@@ -253,14 +213,12 @@ namespace anns
       std::priority_queue<std::pair<float, id_t>> Search(const vdim_t *query_data, size_t k, size_t ef)
       {
         assert(ready_ && "Index uninitialized!");
-
         assert(ef >= k && "ef > k!");
 
         if (cur_element_count_ == 0)
           return std::priority_queue<std::pair<float, id_t>>();
 
         size_t comparison = 0;
-
         id_t cur_obj = enterpoint_node_;
         float cur_dist = vec_L2sqr(query_data, GetDataByInternalID(enterpoint_node_), D_);
         comparison++;
@@ -311,7 +269,6 @@ namespace anns
       std::priority_queue<std::pair<float, id_t>> Search(const vdim_t *query_data, size_t k, size_t ef, id_t ep)
       {
         assert(ready_ && "Index uninitialized!");
-
         assert(ef >= k && "ef > k!");
 
         if (cur_element_count_ == 0)
@@ -627,22 +584,13 @@ namespace anns
           size_t ef)
       {
         size_t comparison = 0;
-
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto mass_visited = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-
         auto mass_visited = std::make_unique<std::vector<bool>>(max_elements_, false);
-
         std::priority_queue<std::pair<float, id_t>> top_candidates;
         std::priority_queue<std::pair<float, id_t>> candidate_set;
-
         float dist = vec_L2sqr(data_point, GetDataByInternalID(ep_id), D_);
         comparison++;
-
         top_candidates.emplace(dist, ep_id); // max heap
         candidate_set.emplace(-dist, ep_id); // min heap
-        // mass_visited[ep_id] = curr_visited;
         mass_visited->at(ep_id) = true;
 
         /// @brief Branch and Bound Algorithm
@@ -705,9 +653,7 @@ namespace anns
             }
           }
         }
-        // visited_list_pool_->ReleaseVisitedList(vl);
         comparison_.fetch_add(comparison);
-
         return top_candidates;
       }
 
@@ -751,24 +697,13 @@ namespace anns
       std::vector<float> GetSearchLengthLevel0(id_t ep_id, const vdim_t *query_data, size_t k, size_t ef, std::priority_queue<std::pair<float, id_t>> &top_candidates)
       {
         std::vector<float> length;
-
         size_t comparison = 0;
-
-        // auto vl = visited_list_pool_->GetFreeVisitedList();
-        // auto mass_visited = vl->mass_.data();
-        // auto curr_visited = vl->curr_visited_;
-
         auto mass_visited = std::make_unique<std::vector<bool>>(max_elements_, false);
-
-        // std::priority_queue<std::pair<float, id_t>> top_candidates;
         std::priority_queue<std::pair<float, id_t>> candidate_set;
-
         float dist = vec_L2sqr(query_data, GetDataByInternalID(ep_id), D_);
         comparison++;
-
         top_candidates.emplace(dist, ep_id); // max heap
         candidate_set.emplace(-dist, ep_id); // min heap
-        // mass_visited[ep_id] = curr_visited;
         mass_visited->at(ep_id) = true;
 
         /// @brief Branch and Bound Algorithm
@@ -776,7 +711,6 @@ namespace anns
         while (candidate_set.size())
         {
           auto curr_el_pair = candidate_set.top();
-
           length.emplace_back(-curr_el_pair.first);
 
           if (-curr_el_pair.first > low_bound && top_candidates.size() == ef)
@@ -833,9 +767,7 @@ namespace anns
             }
           }
         }
-        // visited_list_pool_->ReleaseVisitedList(vl);
         comparison_.fetch_add(comparison);
-
         return length;
       }
 
@@ -877,7 +809,6 @@ namespace anns
       std::vector<float> GetSearchLength(const vdim_t *query_data, size_t k, size_t ef, std::priority_queue<std::pair<float, id_t>> &top_candidates)
       {
         assert(ready_ && "Index uninitialized!");
-
         assert(ef >= k && "ef > k!");
 
         if (cur_element_count_ == 0)
@@ -919,8 +850,6 @@ namespace anns
             comparison += num_neighbors;
           }
         }
-
-        // std::priority_queue<std::pair<float, id_t>> top_candidates;
 
         auto length0 = GetSearchLengthLevel0(cur_obj, query_data, 0, ef, top_candidates);
 
