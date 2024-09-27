@@ -32,13 +32,14 @@ namespace anns
   {
 
     template <typename data_t, float (*distance)(const data_t *, const data_t *, size_t)>
-    class NSG
+    class Vamana
     {
     public:
       size_t cur_element_count_{0};
       size_t R_{0}; // Graph degree limit
       size_t D_{0}; // vector dimension
       size_t Lc_{0};
+      float alpha_{.0};
       id_t enterpoint_node_{0};
       std::vector<const data_t *> vector_data_;
       std::vector<std::vector<id_t>> neighbors_;
@@ -56,7 +57,7 @@ namespace anns
       };
       std::atomic<size_t> comparison_{0};
 
-      NSG(size_t D, size_t R, size_t Lc, int random_seed = 123) noexcept : D_(D), R_(R), Lc_(Lc), random_seed_(random_seed), cur_element_count_(0), enterpoint_node_(-1) {}
+      Vamana(size_t D, size_t R, size_t Lc, float alpha, int random_seed = 123) noexcept : D_(D), R_(R), Lc_(Lc), alpha_(alpha), random_seed_(random_seed), cur_element_count_(0), enterpoint_node_(-1) {}
 
       size_t GetNumThreads() noexcept
       {
@@ -335,6 +336,7 @@ namespace anns
         /// First pass with alpha = 1.0
         pass(1.0);
         /// Second pass with user-defined alpha
+        pass(alpha_);
       }
 
       void BuildIndex(const std::vector<const data_t *> &raw_data)
@@ -471,6 +473,9 @@ namespace anns
         /// First pass with alpha = 1.0
         pass(1.0);
         // std::cout << "First pass done" << std::endl;
+        /// Second pass with user-defined alpha
+        pass(alpha_);
+        // std::cout << "Second pass done" << std::endl;
       }
 
       void Search(
@@ -518,7 +523,7 @@ namespace anns
         }
         return sz;
       }
-
+      
     };
 
   } // namespace graph

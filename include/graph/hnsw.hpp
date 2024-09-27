@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vector_ops.hpp>
+#include <distance.hpp>
 #include <random>
 #include <iostream>
 #include <fstream>
@@ -15,8 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
-#include <utils/binary_io.hpp>
-#include <utils/stimer.hpp>
+#include <utils/binary.hpp>
 #include <algorithm>
 #include <stdexcept>
 #include <omp.h>
@@ -33,123 +32,146 @@ namespace anns
   namespace graph
   {
 
-    template <typename vdim_t>
+    template <typename data_t, float (*distance)(const data_t *, const data_t *, size_t)>
     class HNSW
     {
 
     public:
-      size_t max_elements_{0};
       size_t cur_element_count_{0};
-      size_t size_data_per_element_{0};
-      size_t size_links_per_element_{0};
-      size_t M_{0};     // number of established connections, suggest let M between 8 and 32
-      size_t Mmax_{0};  // maximum number of connections for each element per layer
-      size_t Mmax0_{0}; // maximum number of connections for each element in layer0
+      size_t D_{0}; // vector dimensions
+      size_t Mmax_{0};            // maximum number of connections for each element per layer
+      size_t Mmax0_{0};           // maximum number of connections for each element in layer0
       size_t ef_construction_{0}; // usually been set to 128
       double mult_{0.0};
       double rev_size_{0.0};
       int max_level_{0};
-      std::mutex global_;
-      std::unique_ptr<std::vector<std::mutex>> link_list_locks_;
-      id_t enterpoint_node_{0};
-      size_t size_links_level0_{0};
-      size_t offset_data_{0};
-      std::vector<char> data_level0_memory_; // vector data start pointer of memory.
-      std::vector<std::vector<char>> link_lists_;
-      std::vector<int> element_levels_; // keeps level of each element
-      size_t data_size_{0};
-      size_t D_{0}; // vector dimensions
-      std::default_random_engine level_generator_;
+      id_t enterpoint_node_{-1};
       int random_seed_{100};
-      bool ready_{false};
+
+      std::vector<int> element_levels_; // keeps level of each element
+      std::vector<std::vector<std::vector<id_t>>> link_lists_;
+      std::default_random_engine level_generator_;
+      std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
+      std::vector<const data_t*> data_memory_; // vector data start pointer of memory.
+
+      std::mutex global_;
       size_t num_threads_{1};
       std::atomic<size_t> comparison_{0};
 
-      HNSW(
-          size_t D,
-          size_t max_elements,
-          size_t M = 16, // [8, 32]
-          size_t ef_construction = 128,
-          size_t random_seed = 123) :
-            D_(D), max_elements_(max_elements), M_(M), Mmax_(M), Mmax0_(2 * M),
-            ef_construction_(std::max(ef_construction, M)), random_seed_(random_seed), element_levels_(max_elements)
+      HNSW(size_t D, size_t max_elements, size_t M, size_t ef_construction, size_t random_seed = 100) noexcept: 
+        D_(D), Mmax_(M), Mmax0_(2 * M), ef_construction_(std::max(ef_construction, M)), random_seed_(random_seed), mult_(1 / log(1.0 * Mmax_)), rev_size_(1.0 / mult_)
       {
-        // random seed
         level_generator_.seed(random_seed);
-        data_size_ = D * sizeof(vdim_t);
-        size_links_level0_ = Mmax0_ * sizeof(id_t) + sizeof(size_t);
-        size_data_per_element_ = size_links_level0_ + sizeof(vdim_t *);
-        offset_data_ = size_links_level0_;
-        data_level0_memory_.resize(max_elements_ * size_data_per_element_, 0x00);
-        cur_element_count_ = 0;
-        enterpoint_node_ = -1;
-        max_level_ = -1;
-        link_lists_.resize(max_elements);
-        link_list_locks_ = std::make_unique<std::vector<std::mutex>>(max_elements_);
-        element_levels_.resize(max_elements, -1);
-        size_links_per_element_ = Mmax_ * sizeof(id_t) + sizeof(size_t);
-        mult_ = 1 / log(1.0 * M_);
-        rev_size_ = 1.0 / mult_;
       }
 
-      /// @brief Add point to hnsw index
-      void AddPoint(const vdim_t *data_point)
+      HNSW(const std::vector<data_t>& base, const std::string& filename) noexcept
       {
-        if (cur_element_count_ >= max_elements_)
+        std::ifstream in(filename, std::ios::binary);
+        in.read(reinterpret_cast<char*>(&cur_element_count_), sizeof(cur_element_count_));
+        in.read(reinterpret_cast<char*>(&D_), sizeof(D_));
+        in.read(reinterpret_cast<char*>(&Mmax_), sizeof(Mmax_));
+        in.read(reinterpret_cast<char*>(&Mmax0_), sizeof(Mmax0_));
+        in.read(reinterpret_cast<char*>(&ef_construction_), sizeof(ef_construction_));
+        in.read(reinterpret_cast<char*>(&mult_), sizeof(mult_));
+        in.read(reinterpret_cast<char*>(&rev_size_), sizeof(rev_size_));
+        in.read(reinterpret_cast<char*>(&max_level_), sizeof(max_level_));
+        in.read(reinterpret_cast<char*>(&enterpoint_node_), sizeof(enterpoint_node_));
+        in.read(reinterpret_cast<char*>(&random_seed_), sizeof(random_seed_));
+        element_levels_.resize(cur_element_count_);
+        in.read(reinterpret_cast<char*>(element_levels_.data()), cur_element_count_ * sizeof(int));
+        link_lists_.resize(cur_element_count_);
+        for (id_t id = 0; id < cur_element_count_; id++)
         {
-          std::cerr << "The number of elements exceeds the specified limit" << std::endl;
-          exit(1);
+          auto& ll = link_lists_[id];
+          ll.resize(element_levels_[id] + 1);
+          for (auto& l: ll)
+          {
+            size_t n;
+            in.read(reinterpret_cast<char*>(&n), sizeof(size_t));
+            l.resize(n);
+            in.read(reinterpret_cast<char*>(l.data()), n * sizeof(id_t));
+          }
         }
-
-        id_t cur_id;
+        level_generator_.seed(random_seed_);
+        link_list_locks_.resize(cur_element_count_);
+        std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](std::unique_ptr<std::mutex>& lock) 
+          { lock = std::make_unique<std::mutex>(); });
+        data_memory_.reserve(cur_element_count_);
+        for (size_t i = 0; i < cur_element_count_; i++)
         {
-          std::unique_lock<std::mutex> temp_lock(global_);
-          cur_id = cur_element_count_++;
+          data_memory_.emplace_back(base.data() + i * D_);
         }
+      }
 
-        std::unique_lock<std::mutex> lock_el((*link_list_locks_)[cur_id]);
+      void Save(const std::string& filename) const noexcept
+      {
+        std::ofstream out(filename, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(&cur_element_count_), sizeof(cur_element_count_));
+        out.write(reinterpret_cast<const char*>(&D_), sizeof(D_));
+        out.write(reinterpret_cast<const char*>(&Mmax_), sizeof(Mmax_));
+        out.write(reinterpret_cast<const char*>(&Mmax0_), sizeof(Mmax0_));
+        out.write(reinterpret_cast<const char*>(&ef_construction_), sizeof(ef_construction_));
+        out.write(reinterpret_cast<const char*>(&mult_), sizeof(mult_));
+        out.write(reinterpret_cast<const char*>(&rev_size_), sizeof(rev_size_));
+        out.write(reinterpret_cast<const char*>(&max_level_), sizeof(max_level_));
+        out.write(reinterpret_cast<const char*>(&enterpoint_node_), sizeof(enterpoint_node_));
+        out.write(reinterpret_cast<const char*>(&random_seed_), sizeof(random_seed_));
+        const char* buffer = reinterpret_cast<const char*>(element_levels_.data());
+        out.write(buffer, element_levels_.size() * sizeof(int));
+        for (const auto& ll: link_lists_)
+        {
+          for (const auto& l: ll)
+          {
+            size_t n = l.size();
+            const char* buffer = reinterpret_cast<const char*>(l.data());
+            out.write(reinterpret_cast<const char*>(&n), sizeof(n));
+            out.write(buffer, sizeof(id_t) * n);
+          }
+        }
+      }
+      
+      /// @brief  Add a point to the graph [User should not call this function directly]
+      /// @param data_point 
+      void BuildPoint(id_t cur_id, const data_t *data_point)
+      {
+        // Write the data point
+        data_memory_[cur_id] = data_point;
+
+        // alloc memory for the link lists
+        std::unique_lock<std::mutex> lock_el(*link_list_locks_[cur_id]);
         int cur_level = GetRandomLevel(mult_);
+        for (int lev = 0; lev <= cur_level; lev++)
+        {
+          link_lists_[cur_id].emplace_back(std::vector<id_t>());
+        }
         element_levels_[cur_id] = cur_level;
+
         std::unique_lock<std::mutex> temp_lock(global_);
         int max_level_copy = max_level_;
         id_t cur_obj = enterpoint_node_;
         id_t enterpoint_node_copy = enterpoint_node_;
         if (cur_level <= max_level_) temp_lock.unlock();
 
-        // Clear edge-slot and copy vector into graph buffer.
-        WriteDataByInternalID(cur_id, data_point);
-
-        if (cur_level)
-        {
-          link_lists_[cur_id].resize(size_links_per_element_ * cur_level, 0x00);
-        }
-
         if (enterpoint_node_copy != -1)
         { // not first element
           if (cur_level < max_level_copy)
           {
             // find the closet node in upper layers
-            float cur_dist = vec_L2sqr(data_point, GetDataByInternalID(cur_obj), D_);
+            float cur_dist = distance(data_point, data_memory_[cur_obj], D_);
             for (int lev = max_level_copy; lev > cur_level; lev--)
             {
               bool changed = true;
               while (changed)
               {
                 changed = false;
-                std::unique_lock<std::mutex> wlock(link_list_locks_->at(cur_obj));
-                size_t *ll_cur = (size_t *)GetLinkByInternalID(cur_obj, lev);
-                size_t num_neighbors = *ll_cur;
-                id_t *neighbors = (id_t *)(ll_cur + 1);
+                std::unique_lock<std::mutex> wlock(*link_list_locks_[cur_obj]);
+                const auto& neighbors = link_lists_[cur_obj][lev];
+                size_t num_neighbors = neighbors.size();
 
                 for (size_t i = 0; i < num_neighbors; i++)
                 {
                   id_t cand = neighbors[i];
-                  if (cand < 0 || cand > max_elements_)
-                  {
-                    std::cerr << "cand error" << std::endl;
-                    exit(1);
-                  }
-                  float d = vec_L2sqr(data_point, GetDataByInternalID(cand), D_);
+                  float d = distance(data_point, data_memory_[cand], D_);
                   if (d < cur_dist)
                   {
                     cur_dist = d;
@@ -182,37 +204,44 @@ namespace anns
         }
       }
 
-      void Populate(const std::vector<vdim_t> &raw_data)
+      void BuildIndex(const std::vector<data_t> &raw_data)
       {
-        size_t N = raw_data.size() / D_;
-        assert(N <= max_elements_ && "data size too large!");
+        size_t num_points = raw_data.size() / D_;
+        cur_element_count_ = num_points;
+
+        data_memory_.resize(num_points);
+        link_lists_.resize(num_points);
+        link_list_locks_.resize(num_points);
+        std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](auto &lock){ lock = std::make_unique<std::mutex>(); });
+        element_levels_.resize(num_points, 0);
 
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
-        for (size_t i = 0; i < N; i++)
+        for (id_t id = 0; id < num_points; id++)
         {
-          AddPoint(raw_data.data() + i * D_);
+          BuildPoint(id, raw_data.data() + id * D_);
         }
-
-        ready_ = true;
       }
 
-      void Populate(const std::vector<const vdim_t *> &raw_data)
+      void BuildIndex(const std::vector<const data_t *> &raw_data)
       {
-        size_t N = raw_data.size();
-        assert(N <= max_elements_ && "data size too large!");
+        size_t num_points = raw_data.size();
+        cur_element_count_ = num_points;
+
+        data_memory_.resize(num_points);
+        link_lists_.resize(num_points);
+        link_list_locks_.resize(num_points);
+        std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](auto &lock){ lock = std::make_unique<std::mutex>(); });
+        element_levels_.resize(num_points, 0);
 
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
-        for (size_t i = 0; i < N; i++)
+        for (id_t id = 0; id < num_points; id++)
         {
-          AddPoint(raw_data[i]);
+          BuildPoint(id, raw_data[id]);
         }
-
-        ready_ = true;
       }
 
-      std::priority_queue<std::pair<float, id_t>> Search(const vdim_t *query_data, size_t k, size_t ef)
+      std::priority_queue<std::pair<float, id_t>> Search(const data_t *query_data, size_t k, size_t ef)
       {
-        assert(ready_ && "Index uninitialized!");
         assert(ef >= k && "ef > k!");
 
         if (cur_element_count_ == 0)
@@ -220,7 +249,7 @@ namespace anns
 
         size_t comparison = 0;
         id_t cur_obj = enterpoint_node_;
-        float cur_dist = vec_L2sqr(query_data, GetDataByInternalID(enterpoint_node_), D_);
+        float cur_dist = distance(query_data, data_memory_[enterpoint_node_], D_);
         comparison++;
 
         for (int lev = element_levels_[enterpoint_node_]; lev > 0; lev--)
@@ -230,19 +259,13 @@ namespace anns
           while (changed)
           {
             changed = false;
-            size_t *ll_cur = (size_t *)GetLinkByInternalID(cur_obj, lev);
-            size_t num_neighbors = *ll_cur;
-            id_t *neighbors = (id_t *)(ll_cur + 1);
+            const auto& neighbors = link_lists_[cur_obj][lev];
+            size_t num_neighbors = neighbors.size();
 
             for (size_t i = 0; i < num_neighbors; i++)
             {
               id_t cand = neighbors[i];
-              if (cand < 0 || cand > max_elements_)
-              {
-                std::cerr << "cand error" << std::endl;
-                exit(1);
-              }
-              float d = vec_L2sqr(query_data, GetDataByInternalID(cand), D_);
+              float d = distance(query_data, data_memory_[cand], D_);
               if (d < cur_dist)
               {
                 cur_dist = d;
@@ -266,9 +289,8 @@ namespace anns
         return top_candidates;
       }
 
-      std::priority_queue<std::pair<float, id_t>> Search(const vdim_t *query_data, size_t k, size_t ef, id_t ep)
+      std::priority_queue<std::pair<float, id_t>> Search(const data_t *query_data, size_t k, size_t ef, id_t ep)
       {
-        assert(ready_ && "Index uninitialized!");
         assert(ef >= k && "ef > k!");
 
         if (cur_element_count_ == 0)
@@ -277,7 +299,7 @@ namespace anns
         size_t comparison = 0;
 
         id_t cur_obj = ep;
-        float cur_dist = vec_L2sqr(query_data, GetDataByInternalID(enterpoint_node_), D_);
+        float cur_dist = distance(query_data, data_memory_[enterpoint_node_], D_);
         comparison++;
 
         for (int lev = element_levels_[ep]; lev > 0; lev--)
@@ -287,19 +309,13 @@ namespace anns
           while (changed)
           {
             changed = false;
-            size_t *ll_cur = (size_t *)GetLinkByInternalID(cur_obj, lev);
-            size_t num_neighbors = *ll_cur;
-            id_t *neighbors = (id_t *)(ll_cur + 1);
+            const auto& neighbors = link_lists_[cur_obj][lev];
+            size_t num_neighbors = neighbors.size();
 
             for (size_t i = 0; i < num_neighbors; i++)
             {
               id_t cand = neighbors[i];
-              if (cand < 0 || cand > max_elements_)
-              {
-                std::cerr << "cand error" << std::endl;
-                exit(1);
-              }
-              float d = vec_L2sqr(query_data, GetDataByInternalID(cand), D_);
+              float d = distance(query_data, data_memory_[cand], D_);
               if (d < cur_dist)
               {
                 cur_dist = d;
@@ -323,7 +339,7 @@ namespace anns
         return top_candidates;
       }
 
-      void Search(const std::vector<std::vector<vdim_t>> &queries, size_t k, size_t ef, std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
+      void Search(const std::vector<std::vector<data_t>> &queries, size_t k, size_t ef, std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
       {
         size_t nq = queries.size();
         vids.clear();
@@ -351,52 +367,30 @@ namespace anns
         }
       }
 
-      bool Ready() { return ready_; }
-
-      size_t GetNumThreads()
+      size_t GetNumThreads() const noexcept
       {
         return num_threads_;
       }
 
-      void SetNumThreads(size_t num_threads)
+      void SetNumThreads(size_t num_threads) noexcept
       {
         num_threads_ = num_threads;
       }
 
-      void SetReady(bool ready) { ready_ = ready; }
-
-      size_t GetComparisonAndClear()
+      size_t GetComparisonAndClear() noexcept
       {
         return comparison_.exchange(0);
       }
 
-      size_t IndexSize() const
+      size_t IndexSize() const noexcept
       {
         size_t sz = 0;
-        sz += data_level0_memory_.size() * sizeof(char);
-        std::for_each(link_lists_.begin(), link_lists_.end(), [&](const std::vector<char> &bytes_arr)
-                      { sz += bytes_arr.size() * sizeof(char); });
-        // element levels
-        sz += cur_element_count_ * sizeof(int);
+        for (const auto & ll: link_lists_) {
+          for (const auto & l: ll) {
+            sz += l.size() * sizeof(id_t);
+          }
+        }
         return sz;
-      }
-
-      inline const vdim_t *GetDataByInternalID(id_t id) const
-      {
-        return *((vdim_t **)(data_level0_memory_.data() + id * size_data_per_element_ + offset_data_));
-      }
-
-      inline void WriteDataByInternalID(id_t id, const vdim_t *data_point)
-      {
-        *((const vdim_t **)(data_level0_memory_.data() + id * size_data_per_element_ + offset_data_)) = data_point;
-      }
-
-      inline char *GetLinkByInternalID(id_t id, int level) const
-      {
-        if (level > 0)
-          return (char *)(link_lists_[id].data() + (level - 1) * size_links_per_element_);
-
-        return (char *)(data_level0_memory_.data() + id * size_data_per_element_);
       }
 
       /// @brief Connection new element and return next cloest element id
@@ -405,121 +399,90 @@ namespace anns
       /// @param top_candidates
       /// @param layer
       /// @return
-      id_t MutuallyConnectNewElement(
-          const vdim_t *data_point,
-          id_t id,
-          std::priority_queue<std::pair<float, id_t>> &top_candidates,
-          int level)
+      id_t MutuallyConnectNewElement(const data_t *data_point, id_t id, std::priority_queue<std::pair<float, id_t>> &top_candidates, int level)
       {
         size_t Mcurmax = level ? Mmax_ : Mmax0_;
+        PruneNeighbors(top_candidates, Mcurmax);
 
-        GetNeighborsByHeuristic(top_candidates, M_);
-
-        std::vector<id_t> selected_neighbors;
-        selected_neighbors.reserve(M_);
-        while (top_candidates.size())
-        {
-          selected_neighbors.emplace_back(top_candidates.top().second);
-          top_candidates.pop();
-        }
-
-        id_t next_closet_entry_point = selected_neighbors.back();
-
+        auto& neighbors_cur = link_lists_[id][level];
         /// @brief Edge-slots check and Add neighbors for current vector
         {
           // lock only during the update
           // because during the addition the lock for cur_c is already acquired
-          std::unique_lock<std::mutex> lock((*link_list_locks_)[id], std::defer_lock);
-          size_t *ll_cur = (size_t *)GetLinkByInternalID(id, level);
-          size_t num_neighbors = *ll_cur;
-
-          if (num_neighbors)
+          std::unique_lock<std::mutex> lock(*link_list_locks_[id], std::defer_lock);
+          neighbors_cur.clear();
+          assert(top_candidates.size() <= Mcurmax);
+          neighbors_cur.reserve(top_candidates.size());
+          
+          while (top_candidates.size())
           {
-            std::cerr << "The newly inserted element should have blank link list" << std::endl;
-            exit(1);
-          }
-
-          *ll_cur = selected_neighbors.size();
-
-          id_t *neighbors = (id_t *)(ll_cur + 1);
-          for (size_t i = 0; i < selected_neighbors.size(); i++)
-          {
-            if (neighbors[i])
-            {
-              std::cerr << "Possible memory corruption" << std::endl;
-              exit(1);
-            }
-            if (level > element_levels_[selected_neighbors[i]])
-            {
-              std::cerr << "Trying to make a link on a non-existent level" << std::endl;
-              exit(1);
-            }
-
-            neighbors[i] = selected_neighbors[i];
+            neighbors_cur.emplace_back(top_candidates.top().second);
+            top_candidates.pop();
           }
         }
 
-        for (size_t i = 0; i < selected_neighbors.size(); i++)
+        id_t next_closet_entry_point = neighbors_cur.back();
+
+        for (id_t sid: neighbors_cur)
         {
-          std::unique_lock<std::mutex> lock((*link_list_locks_)[selected_neighbors[i]]);
+          std::unique_lock<std::mutex> lock(*link_list_locks_[sid]);
 
-          size_t *ll_other = (size_t *)GetLinkByInternalID(selected_neighbors[i], level);
-          size_t sz_link_list_other = *ll_other;
+          auto& neighbors = link_lists_[sid][level];
+          size_t sz_link_list_other = neighbors.size();
 
-          if (sz_link_list_other > Mcurmax || sz_link_list_other < 0)
+          if (sz_link_list_other > Mcurmax)
           {
+            std::cout << sz_link_list_other << ">" << Mcurmax << std::endl;
             std::cerr << "Bad value of sz_link_list_other" << std::endl;
             exit(1);
           }
-          if (selected_neighbors[i] == id)
+          if (sid == id)
           {
             std::cerr << "Trying to connect an element to itself" << std::endl;
             exit(1);
           }
-          if (level > element_levels_[selected_neighbors[i]])
+          if (level > element_levels_[sid])
           {
             std::cerr << "Trying to make a link on a non-existent level" << std::endl;
             exit(1);
           }
 
-          id_t *neighbors = (id_t *)(ll_other + 1);
-
           if (sz_link_list_other < Mcurmax)
           {
-            neighbors[sz_link_list_other] = id;
-            *ll_other = sz_link_list_other + 1;
+            neighbors.emplace_back(id);
           }
           else
           {
             // finding the "farest" element to replace it with the new one
-            float d_max = vec_L2sqr(GetDataByInternalID(id), GetDataByInternalID(selected_neighbors[i]), D_);
+            float d_max = distance(data_memory_[id], data_memory_[sid], D_);
             // Heuristic:
             std::priority_queue<std::pair<float, id_t>> candidates;
             candidates.emplace(d_max, id);
 
             for (size_t j = 0; j < sz_link_list_other; j++)
             {
-              candidates.emplace(vec_L2sqr(GetDataByInternalID(neighbors[j]), GetDataByInternalID(selected_neighbors[i]), D_), neighbors[j]);
+              candidates.emplace(distance(data_memory_[neighbors[j]], data_memory_[sid], D_), neighbors[j]);
             }
 
-            GetNeighborsByHeuristic(candidates, Mcurmax);
-
-            // Copy neighbors and add edges.
-            size_t nn = 0;
+            PruneNeighbors(candidates, Mcurmax);
+            // Copy neighbors and add edges
+            neighbors.clear();
+            neighbors.reserve(candidates.size());
             while (candidates.size())
             {
-              neighbors[nn] = candidates.top().second;
+              neighbors.emplace_back(candidates.top().second);
               candidates.pop();
-              nn++;
             }
-            *ll_other = nn;
           }
         }
 
         return next_closet_entry_point;
       }
 
-      void GetNeighborsByHeuristic(std::priority_queue<std::pair<float, id_t>> &top_candidates, size_t NN)
+      /// @brief Return max heap of the top NN elements
+      /// @param top_candidates 
+      /// @param NN 
+      void PruneNeighbors(std::priority_queue<std::pair<float, id_t>> &top_candidates, size_t NN)
       {
         if (top_candidates.size() < NN)
         {
@@ -545,13 +508,12 @@ namespace anns
 
           const auto curen = queue_closest.top();
           float dist2query = -curen.first;
-          const vdim_t *curenv = GetDataByInternalID(curen.second);
+          const data_t *curenv = data_memory_[curen.second];
           queue_closest.pop();
           bool good = true;
           for (const auto &curen2 : return_list)
           {
-            float dist2curenv2 = vec_L2sqr(GetDataByInternalID(curen2.second), curenv, D_);
-
+            float dist2curenv2 = distance(data_memory_[curen2.second], curenv, D_);
             if (dist2curenv2 < dist2query)
             {
               good = false;
@@ -577,21 +539,23 @@ namespace anns
         return (int)r;
       }
 
-      std::priority_queue<std::pair<float, id_t>> SearchBaseLayer(
-          id_t ep_id,
-          const vdim_t *data_point,
-          int level,
-          size_t ef)
+      /// @brief Return the topk nearest neighbors (max-heap) of a given data point on a certain level
+      /// @param ep_id 
+      /// @param data_point 
+      /// @param level 
+      /// @param ef 
+      /// @return 
+      std::priority_queue<std::pair<float, id_t>> SearchBaseLayer(id_t ep_id, const data_t *data_point, int level, size_t ef)
       {
         size_t comparison = 0;
-        auto mass_visited = std::make_unique<std::vector<bool>>(max_elements_, false);
+        std::vector<bool> mass_visited(cur_element_count_, false);
         std::priority_queue<std::pair<float, id_t>> top_candidates;
         std::priority_queue<std::pair<float, id_t>> candidate_set;
-        float dist = vec_L2sqr(data_point, GetDataByInternalID(ep_id), D_);
+        float dist = distance(data_point, data_memory_[ep_id], D_);
         comparison++;
         top_candidates.emplace(dist, ep_id); // max heap
         candidate_set.emplace(-dist, ep_id); // min heap
-        mass_visited->at(ep_id) = true;
+        mass_visited[ep_id] = true;
 
         /// @brief Branch and Bound Algorithm
         float low_bound = dist;
@@ -600,38 +564,18 @@ namespace anns
           auto curr_el_pair = candidate_set.top();
           if (-curr_el_pair.first > low_bound && top_candidates.size() == ef)
             break;
-
           candidate_set.pop();
           id_t curr_node_id = curr_el_pair.second;
+          std::unique_lock<std::mutex> lock(*link_list_locks_[curr_node_id]);
+          const auto& neighbors = link_lists_[curr_node_id][level];
 
-          std::unique_lock<std::mutex> lock((*link_list_locks_)[curr_node_id]);
-
-          size_t *ll_cur = (size_t *)GetLinkByInternalID(curr_node_id, level);
-          size_t num_neighbors = *ll_cur;
-          id_t *neighbors = (id_t *)(ll_cur + 1);
-
-          // #if defined(__SSE__)
-          //   /// @brief Prefetch cache lines to speed up cpu caculation.
-          //   _mm_prefetch((char *) (mass_visited + *neighbors), _MM_HINT_T0);
-          //   _mm_prefetch((char *) (mass_visited + *neighbors + 64), _MM_HINT_T0);
-          //   _mm_prefetch((char *) (GetDataByInternalID(*neighbors)), _MM_HINT_T0);
-          // #endif
-
-          for (size_t j = 0; j < num_neighbors; j++)
+          for (id_t neighbor_id: neighbors)
           {
-            id_t neighbor_id = neighbors[j];
-
-            // #if defined(__SSE__)
-            //   _mm_prefetch((char *) (mass_visited + *(neighbors + j + 1)), _MM_HINT_T0);
-            //   _mm_prefetch((char *) (GetDataByInternalID(*(neighbors + j + 1))), _MM_HINT_T0);
-            // #endif
-
-            if (mass_visited->at(neighbor_id) == false)
+            if (mass_visited[neighbor_id] == false)
             {
-              // mass_visited[neighbor_id] = curr_visited;
-              mass_visited->at(neighbor_id) = true;
+              mass_visited[neighbor_id] = true;
 
-              float dist = vec_L2sqr(data_point, GetDataByInternalID(neighbor_id), D_);
+              float dist = distance(data_point, data_memory_[neighbor_id], D_);
               comparison++;
 
               /// @brief If neighbor is closer than farest vector in top result, and result.size still less than ef
@@ -639,10 +583,6 @@ namespace anns
               {
                 candidate_set.emplace(-dist, neighbor_id);
                 top_candidates.emplace(dist, neighbor_id);
-
-                // #if defined(__SSE__)
-                //   _mm_prefetch((char *) (GetLinkByInternalID(candidate_set.top().second, 0)), _MM_HINT_T0);
-                // #endif
 
                 if (top_candidates.size() > ef) // give up farest result so far
                   top_candidates.pop();
@@ -657,213 +597,6 @@ namespace anns
         return top_candidates;
       }
 
-      id_t GetClosestPoint(const vdim_t *data_point)
-      {
-        if (cur_element_count_ == 0)
-          throw std::runtime_error("empty graph");
-        id_t wander = enterpoint_node_;
-        size_t comparison = 0;
-
-        float dist = vec_L2sqr(data_point, GetDataByInternalID(wander), D_);
-        comparison++;
-
-        for (int lev = element_levels_[enterpoint_node_]; lev > 0; lev--)
-        {
-          bool moving = true;
-          while (moving)
-          {
-            moving = false;
-            size_t *ll = (size_t *)GetLinkByInternalID(wander, lev);
-            size_t sz = *ll;
-            id_t *adj = (id_t *)(ll + 1);
-            for (size_t i = 0; i < sz; i++)
-            {
-              id_t cand = adj[i];
-              float d = vec_L2sqr(data_point, GetDataByInternalID(cand), D_);
-              if (d < dist)
-              {
-                dist = d;
-                wander = cand;
-                moving = true;
-              }
-            }
-            comparison += sz;
-          }
-        }
-        comparison_.fetch_add(comparison);
-        return wander;
-      }
-
-      std::vector<float> GetSearchLengthLevel0(id_t ep_id, const vdim_t *query_data, size_t k, size_t ef, std::priority_queue<std::pair<float, id_t>> &top_candidates)
-      {
-        std::vector<float> length;
-        size_t comparison = 0;
-        auto mass_visited = std::make_unique<std::vector<bool>>(max_elements_, false);
-        std::priority_queue<std::pair<float, id_t>> candidate_set;
-        float dist = vec_L2sqr(query_data, GetDataByInternalID(ep_id), D_);
-        comparison++;
-        top_candidates.emplace(dist, ep_id); // max heap
-        candidate_set.emplace(-dist, ep_id); // min heap
-        mass_visited->at(ep_id) = true;
-
-        /// @brief Branch and Bound Algorithm
-        float low_bound = dist;
-        while (candidate_set.size())
-        {
-          auto curr_el_pair = candidate_set.top();
-          length.emplace_back(-curr_el_pair.first);
-
-          if (-curr_el_pair.first > low_bound && top_candidates.size() == ef)
-            break;
-
-          candidate_set.pop();
-          id_t curr_node_id = curr_el_pair.second;
-
-          std::unique_lock<std::mutex> lock((*link_list_locks_)[curr_node_id]);
-
-          size_t *ll_cur = (size_t *)GetLinkByInternalID(curr_node_id, 0);
-          size_t num_neighbors = *ll_cur;
-          id_t *neighbors = (id_t *)(ll_cur + 1);
-
-          // #if defined(__SSE__)
-          //   /// @brief Prefetch cache lines to speed up cpu caculation.
-          //   _mm_prefetch((char *) (mass_visited + *neighbors), _MM_HINT_T0);
-          //   _mm_prefetch((char *) (mass_visited + *neighbors + 64), _MM_HINT_T0);
-          //   _mm_prefetch((char *) (GetDataByInternalID(*neighbors)), _MM_HINT_T0);
-          // #endif
-
-          for (size_t j = 0; j < num_neighbors; j++)
-          {
-            id_t neighbor_id = neighbors[j];
-
-            // #if defined(__SSE__)
-            //   _mm_prefetch((char *) (mass_visited + *(neighbors + j + 1)), _MM_HINT_T0);
-            //   _mm_prefetch((char *) (GetDataByInternalID(*(neighbors + j + 1))), _MM_HINT_T0);
-            // #endif
-
-            if (mass_visited->at(neighbor_id) == false)
-            {
-              mass_visited->at(neighbor_id) = true;
-
-              float dist = vec_L2sqr(query_data, GetDataByInternalID(neighbor_id), D_);
-              comparison++;
-
-              /// @brief If neighbor is closer than farest vector in top result, and result.size still less than ef
-              if (top_candidates.top().first > dist || top_candidates.size() < ef)
-              {
-                candidate_set.emplace(-dist, neighbor_id);
-                top_candidates.emplace(dist, neighbor_id);
-
-                // #if defined(__SSE__)
-                //   _mm_prefetch((char *) (GetLinkByInternalID(candidate_set.top().second, 0)), _MM_HINT_T0);
-                // #endif
-
-                if (top_candidates.size() > ef) // give up farest result so far
-                  top_candidates.pop();
-
-                if (top_candidates.size())
-                  low_bound = top_candidates.top().first;
-              }
-            }
-          }
-        }
-        comparison_.fetch_add(comparison);
-        return length;
-      }
-
-      std::vector<std::vector<float>> GetSearchLength(
-          const std::vector<std::vector<vdim_t>> &queries, size_t k, size_t ef, std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
-      {
-        size_t nq = queries.size();
-        vids.clear();
-        dists.clear();
-        vids.resize(nq);
-        dists.resize(nq);
-
-        std::vector<std::vector<float>> lengths(nq);
-
-#pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
-        for (size_t i = 0; i < nq; i++)
-        {
-          const auto &query = queries[i];
-          auto &vid = vids[i];
-          auto &dist = dists[i];
-
-          std::priority_queue<std::pair<float, id_t>> r;
-
-          lengths[i] = GetSearchLength(query.data(), k, ef, r);
-          vid.reserve(r.size());
-          dist.reserve(r.size());
-          while (r.size())
-          {
-            const auto &te = r.top();
-            vid.emplace_back(te.second);
-            dist.emplace_back(te.first);
-            r.pop();
-          }
-        }
-
-        return lengths;
-      }
-
-      std::vector<float> GetSearchLength(const vdim_t *query_data, size_t k, size_t ef, std::priority_queue<std::pair<float, id_t>> &top_candidates)
-      {
-        assert(ready_ && "Index uninitialized!");
-        assert(ef >= k && "ef > k!");
-
-        if (cur_element_count_ == 0)
-          return std::vector<float>();
-
-        std::vector<float> length;
-
-        size_t comparison = 0;
-
-        id_t cur_obj = enterpoint_node_;
-        float cur_dist = vec_L2sqr(query_data, GetDataByInternalID(enterpoint_node_), D_);
-        comparison++;
-
-        for (int lev = element_levels_[enterpoint_node_]; lev > 0; lev--)
-        {
-          // find the closet node in upper layers
-          if (length.size())
-            length.pop_back();
-          bool changed = true;
-          while (changed)
-          {
-            length.emplace_back(cur_dist);
-            changed = false;
-            size_t *ll_cur = (size_t *)GetLinkByInternalID(cur_obj, lev);
-            size_t num_neighbors = *ll_cur;
-            id_t *neighbors = (id_t *)(ll_cur + 1);
-
-            for (size_t i = 0; i < num_neighbors; i++)
-            {
-              id_t cand = neighbors[i];
-              float d = vec_L2sqr(query_data, GetDataByInternalID(cand), D_);
-              if (d < cur_dist)
-              {
-                cur_dist = d;
-                cur_obj = cand;
-                changed = true;
-              }
-            }
-            comparison += num_neighbors;
-          }
-        }
-
-        auto length0 = GetSearchLengthLevel0(cur_obj, query_data, 0, ef, top_candidates);
-
-        while (top_candidates.size() > k)
-        {
-          top_candidates.pop();
-        }
-
-        comparison_.fetch_add(comparison);
-
-        length.insert(length.end(), length0.begin(), length0.end());
-
-        return length;
-      }
     };
 
   }; // namespace graph
