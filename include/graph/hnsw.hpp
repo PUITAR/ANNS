@@ -18,6 +18,7 @@
 #include <utils/binary.hpp>
 #include <algorithm>
 #include <stdexcept>
+#include <numeric>
 #include <omp.h>
 
 #ifdef _MSC_VER
@@ -37,6 +38,8 @@ namespace anns
     {
 
     public:
+#define MAGIC_VEC_ID std::numeric_limits<id_t>::max()
+
       size_t cur_element_count_{0};
       size_t D_{0}; // vector dimensions
       size_t Mmax_{0};            // maximum number of connections for each element per layer
@@ -45,7 +48,7 @@ namespace anns
       double mult_{0.0};
       double rev_size_{0.0};
       int max_level_{0};
-      id_t enterpoint_node_{-1};
+      id_t enterpoint_node_{MAGIC_VEC_ID};
       int random_seed_{100};
 
       std::vector<int> element_levels_; // keeps level of each element
@@ -152,7 +155,7 @@ namespace anns
         id_t enterpoint_node_copy = enterpoint_node_;
         if (cur_level <= max_level_) temp_lock.unlock();
 
-        if (enterpoint_node_copy != -1)
+        if (enterpoint_node_copy != MAGIC_VEC_ID)
         { // not first element
           if (cur_level < max_level_copy)
           {
