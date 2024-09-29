@@ -35,19 +35,23 @@ namespace anns
     class Vamana
     {
     public:
+#define MAGIC_VEC_ID std::numeric_limits<id_t>::max()
+
       size_t cur_element_count_{0};
       size_t R_{0}; // Graph degree limit
       size_t D_{0}; // vector dimension
       size_t Lc_{0};
       float alpha_{.0};
-      id_t enterpoint_node_{0};
-      std::vector<const data_t *> vector_data_;
+      id_t enterpoint_node_{MAGIC_VEC_ID};
       std::vector<std::vector<id_t>> neighbors_;
-      int random_seed_{123};
-      // bool ready_{false};
+
+      std::vector<const data_t *> vector_data_;
+      std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
+
       size_t num_threads_{1};
       std::mutex global_;
-      std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
+      std::atomic<size_t> comparison_{0};
+
       struct PHash
       {
         id_t operator()(const std::pair<float, id_t> &pr) const
@@ -55,9 +59,55 @@ namespace anns
           return pr.second;
         }
       };
-      std::atomic<size_t> comparison_{0};
 
-      Vamana(size_t D, size_t R, size_t Lc, float alpha, int random_seed = 123) noexcept : D_(D), R_(R), Lc_(Lc), alpha_(alpha), random_seed_(random_seed), cur_element_count_(0), enterpoint_node_(-1) {}
+      Vamana(size_t D, size_t R, size_t Lc, float alpha) noexcept : 
+        D_(D), R_(R), Lc_(Lc), alpha_(alpha), cur_element_count_(0), enterpoint_node_(MAGIC_VEC_ID) {}
+
+      Vamana(const std::vector<data_t>& base, const std::string& filename) noexcept
+      {
+        std::ifstream in(filename, std::ios::binary);
+        in.read(reinterpret_cast<char *>(&cur_element_count_), sizeof(cur_element_count_));
+        in.read(reinterpret_cast<char *>(&R_), sizeof(R_));
+        in.read(reinterpret_cast<char *>(&D_), sizeof(D_));
+        in.read(reinterpret_cast<char *>(&Lc_), sizeof(Lc_));
+        in.read(reinterpret_cast<char *>(&alpha_), sizeof(alpha_));
+        in.read(reinterpret_cast<char *>(&enterpoint_node_), sizeof(enterpoint_node_));
+        neighbors_.resize(cur_element_count_);
+        for (auto& ll: neighbors_)
+        {
+          size_t n;
+          in.read(reinterpret_cast<char *>(&n), sizeof(n));
+          ll.resize(n);
+          char* buffer = reinterpret_cast<char *>(ll.data());
+          in.read(buffer, n * sizeof(id_t));
+        }
+        vector_data_.reserve(cur_element_count_);
+        for (size_t i = 0; i < cur_element_count_; i++)
+        {
+          vector_data_.emplace_back(base.data() + i * D_);
+        }
+        link_list_locks_.resize(cur_element_count_);
+        std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](std::unique_ptr<std::mutex> &lock)
+                      { lock = std::make_unique<std::mutex>(); });
+      }
+
+      void Save(const std::string& filename) const noexcept
+      {
+        std::ofstream out(filename, std::ios::binary);
+        out.write(reinterpret_cast<const char *>(&cur_element_count_), sizeof(cur_element_count_));
+        out.write(reinterpret_cast<const char *>(&R_), sizeof(R_));
+        out.write(reinterpret_cast<const char *>(&D_), sizeof(D_));
+        out.write(reinterpret_cast<const char *>(&Lc_), sizeof(Lc_));
+        out.write(reinterpret_cast<const char *>(&alpha_), sizeof(alpha_));
+        out.write(reinterpret_cast<const char *>(&enterpoint_node_), sizeof(enterpoint_node_));
+        for (const auto& ll: neighbors_)
+        {
+          size_t n = ll.size();
+          const char* buffer = reinterpret_cast<const char *>(ll.data());
+          out.write(reinterpret_cast<const char *>(&n), sizeof(n));
+          out.write(buffer, n * sizeof(id_t));
+        }
+      }
 
       size_t GetNumThreads() noexcept
       {
@@ -199,7 +249,7 @@ namespace anns
         }
       }
 
-      void BuildIndex(const std::vector<data_t> &raw_data)
+      void Build(const std::vector<data_t> &raw_data)
       {
         const size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -250,7 +300,7 @@ namespace anns
           medoid[i] = static_cast<data_t>(dim_sum[i] / num_points);
         }
         float nearest_dist = std::numeric_limits<float>::max();
-        id_t nearest_node = -1;
+        id_t nearest_node = MAGIC_VEC_ID;
 
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
@@ -339,7 +389,7 @@ namespace anns
         pass(alpha_);
       }
 
-      void BuildIndex(const std::vector<const data_t *> &raw_data)
+      void Build(const std::vector<const data_t *> &raw_data)
       {
         const size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -386,7 +436,7 @@ namespace anns
           medoid[i] = static_cast<data_t>(dim_sum[i] / num_points);
         }
         float nearest_dist = std::numeric_limits<float>::max();
-        id_t nearest_node = -1;
+        id_t nearest_node = MAGIC_VEC_ID;
 
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
@@ -523,7 +573,6 @@ namespace anns
         }
         return sz;
       }
-      
     };
 
   } // namespace graph

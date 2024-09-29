@@ -207,7 +207,7 @@ namespace anns
         }
       }
 
-      void BuildIndex(const std::vector<data_t> &raw_data)
+      void Build(const std::vector<data_t> &raw_data)
       {
         size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -225,7 +225,7 @@ namespace anns
         }
       }
 
-      void BuildIndex(const std::vector<const data_t *> &raw_data)
+      void Build(const std::vector<const data_t *> &raw_data)
       {
         size_t num_points = raw_data.size();
         cur_element_count_ = num_points;
