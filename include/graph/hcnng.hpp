@@ -43,16 +43,16 @@ namespace anns
           parent[i] = i;
       }
 
-      id_t Find(id_t x)
+      id_t find(id_t x)
       {
         if (parent[x] != x)
-          parent[x] = Find(parent[x]);
+          parent[x] = find(parent[x]);
         return parent[x];
       }
 
-      void UnionSet(id_t x, id_t y)
+      void union_set(id_t x, id_t y)
       {
-        parent[Find(x)] = Find(y);
+        parent[find(x)] = find(y);
       }
 
       std::vector<id_t> parent;
@@ -87,7 +87,7 @@ namespace anns
 
       std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
 
-      HCNNG(size_t D, size_t max_elements, size_t num_random_clusters, size_t min_size_clusters, size_t max_mst_degree) noexcept : 
+      HCNNG(size_t D, size_t num_random_clusters, size_t min_size_clusters, size_t max_mst_degree) noexcept : 
         D_(D), cur_element_count_(0), min_size_clusters_(min_size_clusters), max_mst_degree_(max_mst_degree), num_random_clusters_(num_random_clusters) {}
 
       HCNNG(const std::vector<data_t>& base, const std::string& filename) noexcept
@@ -120,7 +120,7 @@ namespace anns
         }
       }
 
-      void Save(const std::string& filename) const noexcept
+      void save(const std::string& filename) const noexcept
       {
         std::ofstream out(filename, std::ios::binary);
         if (!out.is_open())
@@ -141,17 +141,17 @@ namespace anns
         }
       }
 
-      size_t GetNumThreads() const noexcept
+      size_t get_num_threads() const noexcept
       {
         return num_threads_;
       }
 
-      void SetNumThreads(size_t num_threads) noexcept
+      void set_num_threads(size_t num_threads) noexcept
       {
         num_threads_ = num_threads;
       }
 
-      std::vector<std::vector<Edge>> CreateExactMST(
+      std::vector<std::vector<Edge>> create_exact_mst(
           const std::vector<id_t> &idx_points,
           size_t left, size_t right, size_t max_mst_degree)
       {
@@ -181,18 +181,18 @@ namespace anns
           id_t src = e.src;
           id_t dst = e.dst;
           float weight = e.weight;
-          if (ds.Find(src) != ds.Find(dst) && mst[src].size() < max_mst_degree && mst[dst].size() < max_mst_degree)
+          if (ds.find(src) != ds.find(dst) && mst[src].size() < max_mst_degree && mst[dst].size() < max_mst_degree)
           {
             mst[src].emplace_back(e);
             mst[dst].emplace_back(Edge{dst, src, weight});
-            ds.UnionSet(src, dst);
+            ds.union_set(src, dst);
           }
         }
 
         return mst;
       }
 
-      void Build(const std::vector<data_t> &raw_data)
+      void build(const std::vector<data_t> &raw_data)
       {
         size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -217,11 +217,11 @@ namespace anns
           {
             idx_points->at(j) = j;
           }
-          CreateClusters(*idx_points, 0, num_points - 1, min_size_clusters_, max_mst_degree_);
+          create_clusters(*idx_points, 0, num_points - 1, min_size_clusters_, max_mst_degree_);
         }
       }
 
-      void Build(const std::vector<const data_t *> &raw_data)
+      void build(const std::vector<const data_t *> &raw_data)
       {
         size_t num_points = raw_data.size();
         cur_element_count_ = num_points;
@@ -243,16 +243,16 @@ namespace anns
           {
             idx_points->at(j) = j;
           }
-          CreateClusters(*idx_points, 0, num_points - 1, min_size_clusters_, max_mst_degree_);
+          create_clusters(*idx_points, 0, num_points - 1, min_size_clusters_, max_mst_degree_);
         }
       }
 
-      void CreateClusters(std::vector<id_t> &idx_points, size_t left, size_t right, size_t min_size_clusters, size_t max_mst_degree)
+      void create_clusters(std::vector<id_t> &idx_points, size_t left, size_t right, size_t min_size_clusters, size_t max_mst_degree)
       {
         size_t num_points = right - left + 1;
         if (num_points <= min_size_clusters)
         {
-          auto mst = CreateExactMST(idx_points, left, right, max_mst_degree);
+          auto mst = create_exact_mst(idx_points, left, right, max_mst_degree);
 
           // Add edges to graph
           for (size_t i = 0; i < num_points; i++)
@@ -334,18 +334,18 @@ namespace anns
             i++;
           }
 
-          CreateClusters(idx_points, left, left + ids_x_set.size() - 1, min_size_clusters, max_mst_degree);
-          CreateClusters(idx_points, left + ids_x_set.size(), right, min_size_clusters, max_mst_degree);
+          create_clusters(idx_points, left, left + ids_x_set.size() - 1, min_size_clusters, max_mst_degree);
+          create_clusters(idx_points, left + ids_x_set.size(), right, min_size_clusters, max_mst_degree);
         }
       }
 
-      /// @brief Search the base layer (User call this funtion to do single query).
+      /// @brief search the base layer (User call this funtion to do single query).
       /// @param data_point
       /// @param k
       /// @param ef
       /// @return a maxheap containing the knn results
       std::priority_queue<std::pair<float, id_t>>
-      SearchBaseLayer(const data_t *data_point, size_t k, size_t ef)
+      search_base_layer(const data_t *data_point, size_t k, size_t ef)
       {
         std::vector<bool> mass_visited(cur_element_count_, false);
 
@@ -411,7 +411,7 @@ namespace anns
         return top_candidates;
       }
 
-      void Search(
+      void search(
           const std::vector<std::vector<data_t>> &queries,
           size_t k,
           size_t ef,
@@ -431,7 +431,7 @@ namespace anns
           const auto &query = queries[i];
           auto &vid = knn[i];
           auto &dist = dists[i];
-          auto r = SearchBaseLayer(query.data(), k, ef);
+          auto r = search_base_layer(query.data(), k, ef);
           while (r.size())
           {
             const auto &tt = r.top();
@@ -442,7 +442,7 @@ namespace anns
         }
       }
 
-      void PruneNeigh(size_t max_neigh)
+      void prune_neighbors(size_t max_neigh)
       {
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
         for (id_t id = 0; id < cur_element_count_; id++)
@@ -476,12 +476,12 @@ namespace anns
         }
       }
 
-      size_t GetComparisonAndClear() noexcept
+      size_t get_comparison_and_clear() noexcept
       {
         return comparison_.exchange(0);
       }
 
-      size_t IndexSize() const noexcept
+      size_t index_size() const noexcept
       {
         size_t sz = 0;
         for (id_t id = 0; id < cur_element_count_; id++)

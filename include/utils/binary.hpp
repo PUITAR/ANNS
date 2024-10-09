@@ -14,7 +14,7 @@ namespace utils
   /// @param out
   /// @param ref
   template <typename T>
-  static void WriteBinary(std::ofstream &out, const T &ref)
+  static void write_binary(std::ofstream &out, const T &ref)
   {
     if (!out.is_open())
     {
@@ -29,7 +29,7 @@ namespace utils
   /// @param in
   /// @param ref
   template <typename T>
-  static void ReadBinary(std::ifstream &in, T &ref)
+  static void read_binary(std::ifstream &in, T &ref)
   {
     if (!in.is_open())
     {
@@ -40,7 +40,7 @@ namespace utils
   }
 
   template <typename T>
-  static void WriteBinary(std::ofstream &out, const T *buffer, size_t n)
+  static void write_binary(std::ofstream &out, const T *buffer, size_t n)
   {
     if (!out.is_open())
     {
@@ -51,7 +51,7 @@ namespace utils
   }
 
   template <typename T>
-  static void ReadBinary(std::ifstream &in, T *buffer, size_t n)
+  static void read_binary(std::ifstream &in, T *buffer, size_t n)
   {
     if (!in.is_open())
     {
@@ -67,7 +67,7 @@ namespace utils
 
   // return the dimention of corresponding dataset
   template <typename T>
-  std::pair<size_t, size_t> LoadFromFile(std::vector<T> &data, const std::string &filename)
+  std::pair<size_t, size_t> load_from_file(std::vector<T> &data, const std::string &filename)
   {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open())
@@ -99,7 +99,7 @@ namespace utils
   }
 
   template <typename T>
-  std::pair<size_t, size_t> LoadFromFile(std::vector<T> &data, const std::string &filename, size_t expect_read_n)
+  std::pair<size_t, size_t> load_from_file(std::vector<T> &data, const std::string &filename, size_t expect_read_n)
   {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open())
@@ -133,7 +133,7 @@ namespace utils
   }
 
   template <typename T>
-  std::pair<size_t, size_t> LoadFromFileBin(std::vector<T> &data, const std::string &filename)
+  std::pair<size_t, size_t> load_from_file_bin(std::vector<T> &data, const std::string &filename)
   {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open())
@@ -157,7 +157,7 @@ namespace utils
   }
 
   template <typename T>
-  void WriteToFile(const std::vector<T> &data, std::pair<size_t, size_t> dimension, const std::string &filename)
+  void write_to_file(const std::vector<T> &data, std::pair<size_t, size_t> dimension, const std::string &filename)
   {
     std::ofstream file(filename, std::ios::binary | std::ios::trunc);
     if (!file.is_open())

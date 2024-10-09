@@ -12,7 +12,7 @@ namespace utils {
 /// @param ground_truth 
 /// @param dimension_gt the dimension of the ground_truth vector (cause the `ground_truth` is save in ivec(vector) file?)
 /// @return 
-double GetRecall(size_t k, size_t dimension_gt, const std::vector<id_t> & ground_truth, const std::vector<std::vector<id_t>> & knn_results) {
+double recall(size_t k, size_t dimension_gt, const std::vector<id_t> & ground_truth, const std::vector<std::vector<id_t>> & knn_results) {
   const size_t nq = knn_results.size();
   size_t ok = 0;
   #pragma omp parallel for reduction(+: ok)

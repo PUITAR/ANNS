@@ -61,7 +61,7 @@ namespace anns
       size_t num_threads_{1};
       std::atomic<size_t> comparison_{0};
 
-      HNSW(size_t D, size_t max_elements, size_t M, size_t ef_construction, size_t random_seed = 100) noexcept: 
+      HNSW(size_t D, size_t M, size_t ef_construction, size_t random_seed = 100) noexcept: 
         D_(D), Mmax_(M), Mmax0_(2 * M), ef_construction_(std::max(ef_construction, M)), random_seed_(random_seed), mult_(1 / log(1.0 * Mmax_)), rev_size_(1.0 / mult_)
       {
         level_generator_.seed(random_seed);
@@ -106,7 +106,7 @@ namespace anns
         }
       }
 
-      void Save(const std::string& filename) const noexcept
+      void save(const std::string& filename) const noexcept
       {
         std::ofstream out(filename, std::ios::binary);
         out.write(reinterpret_cast<const char*>(&cur_element_count_), sizeof(cur_element_count_));
@@ -135,14 +135,14 @@ namespace anns
       
       /// @brief  Add a point to the graph [User should not call this function directly]
       /// @param data_point 
-      void BuildPoint(id_t cur_id, const data_t *data_point)
+      void build_point(id_t cur_id, const data_t *data_point)
       {
         // Write the data point
         data_memory_[cur_id] = data_point;
 
         // alloc memory for the link lists
         std::unique_lock<std::mutex> lock_el(*link_list_locks_[cur_id]);
-        int cur_level = GetRandomLevel(mult_);
+        int cur_level = get_random_level(mult_);
         for (int lev = 0; lev <= cur_level; lev++)
         {
           link_lists_[cur_id].emplace_back(std::vector<id_t>());
@@ -188,8 +188,8 @@ namespace anns
           /// add edges to lower layers from the closest node
           for (int lev = std::min(cur_level, max_level_copy); lev >= 0; lev--)
           {
-            auto top_candidates = SearchBaseLayer(cur_obj, data_point, lev, ef_construction_);
-            cur_obj = MutuallyConnectNewElement(data_point, cur_id, top_candidates, lev);
+            auto top_candidates = search_base_layer(cur_obj, data_point, lev, ef_construction_);
+            cur_obj = mutually_connect_new_element(data_point, cur_id, top_candidates, lev);
           }
         }
         else
@@ -207,7 +207,7 @@ namespace anns
         }
       }
 
-      void Build(const std::vector<data_t> &raw_data)
+      void build(const std::vector<data_t> &raw_data)
       {
         size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -221,11 +221,11 @@ namespace anns
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
-          BuildPoint(id, raw_data.data() + id * D_);
+          build_point(id, raw_data.data() + id * D_);
         }
       }
 
-      void Build(const std::vector<const data_t *> &raw_data)
+      void build(const std::vector<const data_t *> &raw_data)
       {
         size_t num_points = raw_data.size();
         cur_element_count_ = num_points;
@@ -239,11 +239,11 @@ namespace anns
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (id_t id = 0; id < num_points; id++)
         {
-          BuildPoint(id, raw_data[id]);
+          build_point(id, raw_data[id]);
         }
       }
 
-      std::priority_queue<std::pair<float, id_t>> Search(const data_t *query_data, size_t k, size_t ef)
+      std::priority_queue<std::pair<float, id_t>> search(const data_t *query_data, size_t k, size_t ef)
       {
         assert(ef >= k && "ef > k!");
 
@@ -280,7 +280,7 @@ namespace anns
           }
         }
 
-        auto top_candidates = SearchBaseLayer(cur_obj, query_data, 0, ef);
+        auto top_candidates = search_base_layer(cur_obj, query_data, 0, ef);
 
         while (top_candidates.size() > k)
         {
@@ -292,7 +292,7 @@ namespace anns
         return top_candidates;
       }
 
-      std::priority_queue<std::pair<float, id_t>> Search(const data_t *query_data, size_t k, size_t ef, id_t ep)
+      std::priority_queue<std::pair<float, id_t>> search(const data_t *query_data, size_t k, size_t ef, id_t ep)
       {
         assert(ef >= k && "ef > k!");
 
@@ -330,7 +330,7 @@ namespace anns
           }
         }
 
-        auto top_candidates = SearchBaseLayer(cur_obj, query_data, 0, ef);
+        auto top_candidates = search_base_layer(cur_obj, query_data, 0, ef);
 
         while (top_candidates.size() > k)
         {
@@ -342,7 +342,7 @@ namespace anns
         return top_candidates;
       }
 
-      void Search(const std::vector<std::vector<data_t>> &queries, size_t k, size_t ef, std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
+      void search(const std::vector<std::vector<data_t>> &queries, size_t k, size_t ef, std::vector<std::vector<id_t>> &vids, std::vector<std::vector<float>> &dists)
       {
         size_t nq = queries.size();
         vids.clear();
@@ -357,7 +357,7 @@ namespace anns
           auto &vid = vids[i];
           auto &dist = dists[i];
 
-          auto r = Search(query.data(), k, ef);
+          auto r = search(query.data(), k, ef);
           vid.reserve(r.size());
           dist.reserve(r.size());
           while (r.size())
@@ -370,22 +370,22 @@ namespace anns
         }
       }
 
-      size_t GetNumThreads() const noexcept
+      size_t get_num_threads() const noexcept
       {
         return num_threads_;
       }
 
-      void SetNumThreads(size_t num_threads) noexcept
+      void set_num_threads(size_t num_threads) noexcept
       {
         num_threads_ = num_threads;
       }
 
-      size_t GetComparisonAndClear() noexcept
+      size_t get_comparison_and_clear() noexcept
       {
         return comparison_.exchange(0);
       }
 
-      size_t IndexSize() const noexcept
+      size_t index_size() const noexcept
       {
         size_t sz = 0;
         for (const auto & ll: link_lists_) {
@@ -402,10 +402,10 @@ namespace anns
       /// @param top_candidates
       /// @param layer
       /// @return
-      id_t MutuallyConnectNewElement(const data_t *data_point, id_t id, std::priority_queue<std::pair<float, id_t>> &top_candidates, int level)
+      id_t mutually_connect_new_element(const data_t *data_point, id_t id, std::priority_queue<std::pair<float, id_t>> &top_candidates, int level)
       {
         size_t Mcurmax = level ? Mmax_ : Mmax0_;
-        PruneNeighbors(top_candidates, Mcurmax);
+        prune_neighbors(top_candidates, Mcurmax);
 
         auto& neighbors_cur = link_lists_[id][level];
         /// @brief Edge-slots check and Add neighbors for current vector
@@ -467,7 +467,7 @@ namespace anns
               candidates.emplace(distance(data_memory_[neighbors[j]], data_memory_[sid], D_), neighbors[j]);
             }
 
-            PruneNeighbors(candidates, Mcurmax);
+            prune_neighbors(candidates, Mcurmax);
             // Copy neighbors and add edges
             neighbors.clear();
             neighbors.reserve(candidates.size());
@@ -485,7 +485,7 @@ namespace anns
       /// @brief Return max heap of the top NN elements
       /// @param top_candidates 
       /// @param NN 
-      void PruneNeighbors(std::priority_queue<std::pair<float, id_t>> &top_candidates, size_t NN)
+      void prune_neighbors(std::priority_queue<std::pair<float, id_t>> &top_candidates, size_t NN)
       {
         if (top_candidates.size() < NN)
         {
@@ -535,7 +535,7 @@ namespace anns
         }
       }
 
-      int GetRandomLevel(double reverse_size)
+      int get_random_level(double reverse_size)
       {
         std::uniform_real_distribution<double> distribution(0.0, 1.0);
         double r = -log(distribution(level_generator_)) * reverse_size;
@@ -548,7 +548,7 @@ namespace anns
       /// @param level 
       /// @param ef 
       /// @return 
-      std::priority_queue<std::pair<float, id_t>> SearchBaseLayer(id_t ep_id, const data_t *data_point, int level, size_t ef)
+      std::priority_queue<std::pair<float, id_t>> search_base_layer(id_t ep_id, const data_t *data_point, int level, size_t ef)
       {
         size_t comparison = 0;
         std::vector<bool> mass_visited(cur_element_count_, false);

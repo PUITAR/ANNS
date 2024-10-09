@@ -20,19 +20,19 @@ namespace utils
     {
       if (N < TQDM_WIDTH)
         TQDM_WIDTH = N;
-      BarRebuild();
+      bar_rebuild();
       curr_ = 0;
       std::cout << name_ << bar_;
     }
 
-    void Reset()
+    void reset()
     {
-      BarRebuild();
+      bar_rebuild();
       curr_ = 0;
-      UpdateBar();
+      update_bar();
     }
 
-    void Next()
+    void next()
     {
       curr_++;
       if (curr_ > N_)
@@ -40,7 +40,7 @@ namespace utils
       size_t idx = curr_ * TQDM_WIDTH / N_;
       if (idx)
         bar_[idx] = '=';
-      UpdateBar();
+      update_bar();
     }
 
     ~TQDM()
@@ -49,14 +49,14 @@ namespace utils
     }
 
   private:
-    inline void BarRebuild()
+    inline void bar_rebuild()
     {
       bar_ = std::string(TQDM_WIDTH + 2, ' ');
       bar_[0] = '[';
       bar_[TQDM_WIDTH + 1] = ']';
     }
 
-    inline void UpdateBar() const
+    inline void update_bar() const
     {
       for (size_t i = 0; i < TQDM_WIDTH + 2; i++)
       {

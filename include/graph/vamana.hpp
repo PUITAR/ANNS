@@ -91,7 +91,7 @@ namespace anns
                       { lock = std::make_unique<std::mutex>(); });
       }
 
-      void Save(const std::string& filename) const noexcept
+      void save(const std::string& filename) const noexcept
       {
         std::ofstream out(filename, std::ios::binary);
         out.write(reinterpret_cast<const char *>(&cur_element_count_), sizeof(cur_element_count_));
@@ -109,23 +109,23 @@ namespace anns
         }
       }
 
-      size_t GetNumThreads() noexcept
+      size_t get_num_threads() noexcept
       {
         return num_threads_;
       }
 
-      void SetNumThreads(size_t num_threads) noexcept
+      void set_num_threads(size_t num_threads) noexcept
       {
         num_threads_ = num_threads;
       }
 
-      /// @brief Search the base layer (User call this funtion to do single query).
+      /// @brief search the base layer (User call this funtion to do single query).
       /// @param data_point
       /// @param k
       /// @param ef
       /// @return a maxheap containing the knn results
       std::priority_queue<std::pair<float, id_t>>
-      SearchBaseLayer(const data_t *data_point, size_t k, size_t ef)
+      search_base_layer(const data_t *data_point, size_t k, size_t ef)
       {
         std::vector<bool> mass_visited(cur_element_count_, false);
 
@@ -194,15 +194,12 @@ namespace anns
       /// @param node_id
       /// @param alpha
       /// @param candidates a minheap
-      void RobustPrune(
-          id_t node_id,
-          float alpha,
-          std::priority_queue<std::pair<float, id_t>> &candidates)
+      void robust_prune(id_t node_id, float alpha, std::priority_queue<std::pair<float, id_t>> &candidates)
       {
         assert(alpha >= 1);
 
         // Ps: It will make a dead-lock if locked here, so make sure the code have locked the link-list of
-        // the pruning node outside of the function `RobustPrune` in caller
+        // the pruning node outside of the function `robust_prune` in caller
         const data_t *data_node = vector_data_[node_id];
         auto &neighbors = neighbors_[node_id];
         for (id_t nei : neighbors)
@@ -249,7 +246,7 @@ namespace anns
         }
       }
 
-      void Build(const std::vector<data_t> &raw_data)
+      void build(const std::vector<data_t> &raw_data)
       {
         const size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -324,14 +321,14 @@ namespace anns
         }
         std::random_shuffle(sigma.begin(), sigma.end());
 
-        // Building pass begin
+        // building pass begin
         auto pass = [&](float beta)
         {
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
           for (size_t i = 0; i < num_points; i++)
           {
             id_t cur_id = sigma[i];
-            auto top_candidates = SearchBaseLayer(vector_data_[cur_id], R_, Lc_); // output is a maxheap containing results
+            auto top_candidates = search_base_layer(vector_data_[cur_id], R_, Lc_); // output is a maxheap containing results
             {                                                                     // transform to minheap
               std::priority_queue<std::pair<float, id_t>> temp;
               while (top_candidates.size())
@@ -343,7 +340,7 @@ namespace anns
               top_candidates = std::move(temp);
             }
             std::unique_lock<std::mutex> lock(*link_list_locks_[cur_id]);
-            RobustPrune(cur_id, beta, top_candidates);
+            robust_prune(cur_id, beta, top_candidates);
             auto &neighbors = neighbors_[cur_id];
             std::vector<id_t> neighbors_copy(neighbors);
             lock.unlock();
@@ -368,7 +365,7 @@ namespace anns
                 {
                   std::priority_queue<std::pair<float, id_t>> temp_cand_set;
                   temp_cand_set.emplace(-distance(vector_data_[neij], vector_data_[cur_id], D_), cur_id);
-                  RobustPrune(neij, beta, temp_cand_set);
+                  robust_prune(neij, beta, temp_cand_set);
                 }
                 else if (neighbors_other.size() < R_)
                 {
@@ -389,7 +386,7 @@ namespace anns
         pass(alpha_);
       }
 
-      void Build(const std::vector<const data_t *> &raw_data)
+      void build(const std::vector<const data_t *> &raw_data)
       {
         const size_t num_points = raw_data.size() / D_;
         cur_element_count_ = num_points;
@@ -460,14 +457,14 @@ namespace anns
         }
         std::random_shuffle(sigma.begin(), sigma.end());
 
-        // Building pass begin
+        // building pass begin
         auto pass = [&](float beta)
         {
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
           for (size_t i = 0; i < num_points; i++)
           {
             id_t cur_id = sigma[i];
-            auto top_candidates = SearchBaseLayer(vector_data_[cur_id], R_, Lc_);
+            auto top_candidates = search_base_layer(vector_data_[cur_id], R_, Lc_);
             { // transform to minheap
               std::priority_queue<std::pair<float, id_t>> temp;
               while (top_candidates.size())
@@ -480,7 +477,7 @@ namespace anns
             }
 
             std::unique_lock<std::mutex> lock(*link_list_locks_[cur_id]);
-            RobustPrune(cur_id, beta, top_candidates);
+            robust_prune(cur_id, beta, top_candidates);
             auto &neighbors = neighbors_[cur_id];
             std::vector<id_t> neighbors_copy(neighbors);
             lock.unlock();
@@ -505,7 +502,7 @@ namespace anns
                 {
                   std::priority_queue<std::pair<float, id_t>> temp_cand_set;
                   temp_cand_set.emplace(-distance(vector_data_[neij], vector_data_[cur_id], D_), cur_id);
-                  RobustPrune(neij, beta, temp_cand_set);
+                  robust_prune(neij, beta, temp_cand_set);
                 }
                 else if (neighbors_other.size() < R_)
                 {
@@ -528,7 +525,7 @@ namespace anns
         // std::cout << "Second pass done" << std::endl;
       }
 
-      void Search(
+      void search(
           const std::vector<std::vector<data_t>> &queries,
           size_t k,
           size_t ef,
@@ -548,7 +545,7 @@ namespace anns
           const auto &query = queries[i];
           auto &vid = knn[i];
           auto &dist = dists[i];
-          auto r = SearchBaseLayer(query.data(), k, ef);
+          auto r = search_base_layer(query.data(), k, ef);
           while (r.size())
           {
             const auto &tt = r.top();
@@ -559,12 +556,12 @@ namespace anns
         }
       }
 
-      size_t GetComparisonAndClear() noexcept
+      size_t get_comparison_and_clear() noexcept
       {
         return comparison_.exchange(0);
       }
 
-      size_t IndexSize() const noexcept
+      size_t index_size() const noexcept
       {
         size_t sz = 0;
         for (const auto &ll : neighbors_)

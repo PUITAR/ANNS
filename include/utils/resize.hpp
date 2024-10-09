@@ -7,7 +7,7 @@ namespace utils
 {
 
   template <typename vdim_t>
-  std::vector<vdim_t> Flatten(const std::vector<std::vector<vdim_t>> &nested)
+  std::vector<vdim_t> flatten(const std::vector<std::vector<vdim_t>> &nested)
   {
     size_t d0 = nested.size();
     size_t d1 = nested[0].size();
@@ -20,7 +20,7 @@ namespace utils
   }
 
   template <typename vdim_t>
-  std::vector<vdim_t> Flatten(const std::vector<std::vector<std::vector<vdim_t>>> &nested)
+  std::vector<vdim_t> flatten(const std::vector<std::vector<std::vector<vdim_t>>> &nested)
   {
     size_t d0 = nested.size();
     size_t d1 = nested[0].size();
@@ -37,7 +37,7 @@ namespace utils
   }
 
   template <typename vdim_t>
-  std::vector<std::vector<vdim_t>> Nest(const std::vector<vdim_t> &flattened, size_t d0, size_t d1)
+  std::vector<std::vector<vdim_t>> nest(const std::vector<vdim_t> &flattened, size_t d0, size_t d1)
   {
     std::vector<std::vector<vdim_t>> nested(d0);
 
@@ -51,7 +51,7 @@ namespace utils
   }
 
   template <typename vdim_t>
-  std::vector<std::vector<std::vector<vdim_t>>> Nest(const std::vector<vdim_t> &flattened, size_t d0, size_t d1, size_t d2)
+  std::vector<std::vector<std::vector<vdim_t>>> nest(const std::vector<vdim_t> &flattened, size_t d0, size_t d1, size_t d2)
   {
     assert(flattened.size() == d0 * d1 * d2);
     std::vector<std::vector<std::vector<vdim_t>>> nested(d0, std::vector<std::vector<vdim_t>>(d1, std::vector<vdim_t>(d2)));

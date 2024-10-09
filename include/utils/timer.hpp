@@ -17,16 +17,16 @@ namespace utils
     /// @brief A tiny timer to test runtime in "second" unit.
     Timer() : total_(0) {}
 
-    void Reset() { total_ = 0; }
+    void reset() { total_ = 0; }
 
-    void Start() { t1_ = clock::now(); }
+    void start() { t1_ = clock::now(); }
 
-    void Stop()
+    void stop()
     {
       total_ += (std::chrono::duration<double, std::milli>(clock::now() - t1_).count() / 1000);
     }
 
-    double GetTime() { return total_; }
+    double get() { return total_; }
   };
 
 }

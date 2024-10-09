@@ -928,5 +928,5 @@ namespace anns
 
 } // namespace anns
 
-using anns::L2;
-using anns::InnerProduct;
+// using anns::L2;
+// using anns::InnerProduct;
