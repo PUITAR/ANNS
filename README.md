@@ -74,7 +74,7 @@ To use the ANNS library simply, we wrap the CPP APIs with Python API, which you 
 
 ## Dataset 
 
-All datasets used in this library are in the **vecs**-format, which you can download from [here](https://github.com/erikbern/ann-benchmarks.git). I have built a framework base on Ann-benchmark, to download the datasets and convert them to **vecs**-format. You can find the code in [anns/dataset](https://github.com/ann-parallel/anns/tree/main/dataset).
+All datasets used in this library are in the **vecs**-format, which you can download from [here](https://github.com/erikbern/ann-benchmarks.git). We here provid a framework base on Ann-benchmark, to download the datasets and convert them to **vecs**-format. You can find the code in [here](https://github.com/PUITAR/ANNS-DATA.git).
 
 ## Delta-Development
 
