@@ -1,77 +1,88 @@
 # ANNS Library Usage
 
+This is a very basic library of ANNS sota algorithms. It is written in C++/C++ standard libarary and can be used to build and query an index of points in high-dimensional space. The library provides a variety of algorithms for building and querying the index. The library is designed to be easy to use and to provide relatively high performance.
+
+It's a very useful tool for you to build your own ANNS index alogrithm without too much effort.
+
+## C++ Version
+
+This is an example of how to use the ANNS library to build and query an index.
+
 ```c++
-// ... ... ...
-int main() {
-  std::vector<vdim_t> base_vectors, queries_vectors;
-  std::vector<id_t> groundtruth;
-  auto [nb, d0] = utils::LoadFromFile(base_vectors, base_vectors_path);
-  auto [nq, d1] = utils::LoadFromFile(queries_vectors, queries_vectors_path);
-  auto [ng, d2] = utils::LoadFromFile(groundtruth, groundtruth_path);
-  auto nest_queries_vectors = utils::Nest(std::move(queries_vectors), nq, d1);
-  utils::STimer build_timer;
-  utils::STimer query_timer;
-  auto cspg = std::make_unique<anns::graph::RandomPartitionGraph<vdim_t, subgraph_t>> (d0, part);
-  build_timer.Start();
-  cspg->BuildIndex(base_vectors, num_threads, {default_params.max_degree, default_params.efc, default_params.dedup});
-  build_timer.Stop();
-  std::vector<std::vector<id_t>> knn;
-  query_timer.Start();
-  cspg->GetTopkNNParallel(nest_queries_vectors, k, num_threads, 1, efq, knn);
-  query_timer.Stop();
-  std::cout << "Query TIme: " << query_timer.GetTime() << std::endl;
-  std::cout << "Recall@10: " << utils::GetRecall(k, d2, groundtruth, knn) << std::endl;
-  // ... ... ...
+#include <graph/hnsw.hpp>
+#include <utils/binary.hpp>
+#include <utils/resize.hpp>
+#include <utils/recall.hpp>
+#include <utils/timer.hpp>
+#include <iostream>
+
+using namespace std;
+using namespace anns;
+
+// const std::string bp = "/var/lib/docker/anns/dataset/sift1m/base.fvecs";
+const std::string bp = "../data/sift-128-euclidean.train.fvecs";
+const std::string qp = "../data/sift-128-euclidean.test.fvecs";
+const std::string gp = "../data/sift-128-euclidean.gt.ivecs";
+
+const size_t k = 1;
+
+int main(int argc, char **argv)
+{
+  std::vector<float> base, query;
+  std::vector<id_t> gt;
+  auto [nb, d] = utils::load_from_file(base, bp);
+  auto [nq, _] = utils::load_from_file(query, qp);
+  auto [ng, t] = utils::load_from_file(gt, gp);
+  auto nestq = utils::nest(std::move(query), nq, d);
+  std::cout << nb << "x" << d << std::endl;
+  std::cout << nq << "x" << d << std::endl;
+  std::cout << ng << "x" << t << std::endl;
+
+  { /* Build an user-defined index, then save it into the file with suffix '.idx'. */
+    auto index = std::make_unique<anns::graph::HNSW<float, metrics::L2>> (d, 16, 500);
+    utils::Timer timer;
+    timer.start();
+    index->set_num_threads(24);
+    index->build(base);
+    timer.stop();
+    std::cout << "build time: " << timer.get() << " s" << std::endl;
+    index->save("hnsw_sift1m.idx");
+    std::cout << "index size: " << index->index_size() << " bytes" << std::endl;
+  }
+
+  { /* Read the index from the index file build so far, then process the k-ANNS task */
+    auto index = std::make_unique<anns::graph::HNSW<float, metrics::L2>> (base, "hnsw_sift1m.idx");
+    index->set_num_threads(24);
+    std::vector<std::vector<id_t>> knn;
+    std::vector<std::vector<float>> dis;
+    index->search(nestq, k, 128, knn, dis);
+    auto recall = utils::recall(k, t, gt, knn);
+    std::cout << "recall: " << recall << std::endl;
+  }
+
   return 0;
 }
 ```
 
-This is an example of how to use the ANNS library to build and query an index. The `main` function takes in the path to the base vectors, queries vectors, and groundtruth file, as well as the number of partitions, maximum degree, and effective query count for the index. It then builds the index and performs queries on the queries vectors, and outputs the results to a CSV file.
+## Python Version
 
 To use the ANNS library simply, we wrap the CPP APIs with Python API, which you can use as follow. [Example for ANNS Python API](test_anns.ipynb)
 
 ```python
-# Include the library modules
-import sys
-mpath = 'Path/To/CSPG/ANNS/modules'
-if mpath not in sys.path:
-  sys.path.append(mpath)
+# Still on going...
+```
 
-# Import important modules
-import anns
-import numpy as np
-from binary_io import  *
+## Dataset 
 
-# Data path
-base = "/var/lib/docker/anns/dataset/sift1m/base.fvecs"
-query = "/var/lib/docker/anns/query/sift1m/query.fvecs"
-gt = "/var/lib/docker/anns/query/sift1m/gt.ivecs"
+All datasets used in this library are in the **vecs**-format, which you can download from [here](https://github.com/erikbern/ann-benchmarks.git). I have built a framework base on Ann-benchmark, to download the datasets and convert them to **vecs**-format. You can find the code in [anns/dataset](https://github.com/ann-parallel/anns/tree/main/dataset).
 
-# Read data from files
-base = fvecs_read(base)
-query = fvecs_read(query)
-gt = ivecs_read(gt)
-nb, d = base.shape
-nq, _ = query.shape
-_, ngt = gt.shape
+## Delta-Development
 
-# Parameters
-m = 2
-threads = 24
-k = 10
+If you are interested in the delta-development of the ANN algorithm, you can inhert from a index-based class and implement your own algorithm to keep the original API. For example
 
-# Reshape the data to adjust to the library APIs
-base = base.flatten().tolist()
-query = query.flatten().tolist()
-gt = gt.flatten().tolist()
+```c++
 
-# Initialize your index and build
-index = anns.CSPG_HNSW_FLOAT(d, m)
-index.build(base, threads, [32, 128, 0.5])
-
-# Search k-NN
-knn = index.search(query, k, 1, ef1 = 1, ef2 = 128)
-
-# Get recall by groudtruth
-print(anns.get_recall(k, ngt, gt, knn))
+template <typename data_t, typename label_t, float (*distance)(const data_t *, const data_t *, size_t)>
+  class PostFilterHCNNG : public HCNNG<data_t, distance>
+/* ... */
 ```

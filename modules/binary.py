@@ -1,3 +1,8 @@
+'''
+This file is writen by Puitar
+  for reading binary files of vecs format
+'''
+
 import numpy as np
 import struct
 
