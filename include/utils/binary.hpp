@@ -9,57 +9,57 @@
 namespace utils
 {
 
-  /// @brief Write variable ref to file in binary type.
-  /// @tparam T
-  /// @param out
-  /// @param ref
-  template <typename T>
-  static void write_binary(std::ofstream &out, const T &ref)
-  {
-    if (!out.is_open())
-    {
-      std::cout << "Error: file not open." << std::endl;
-      exit(1);
-    }
-    out.write((char *)&ref, sizeof(T));
-  }
+  // /// @brief Write variable ref to file in binary type.
+  // /// @tparam T
+  // /// @param out
+  // /// @param ref
+  // template <typename T>
+  // static void write_binary(std::ofstream &out, const T &ref)
+  // {
+  //   if (!out.is_open())
+  //   {
+  //     std::cout << "Error: file not open." << std::endl;
+  //     exit(1);
+  //   }
+  //   out.write((char *)&ref, sizeof(T));
+  // }
 
-  /// @brief Read variable ref from file in binary type.
-  /// @tparam T
-  /// @param in
-  /// @param ref
-  template <typename T>
-  static void read_binary(std::ifstream &in, T &ref)
-  {
-    if (!in.is_open())
-    {
-      std::cout << "Error: file not open." << std::endl;
-      exit(1);
-    }
-    in.read((char *)&ref, sizeof(T));
-  }
+  // /// @brief Read variable ref from file in binary type.
+  // /// @tparam T
+  // /// @param in
+  // /// @param ref
+  // template <typename T>
+  // static void read_binary(std::ifstream &in, T &ref)
+  // {
+  //   if (!in.is_open())
+  //   {
+  //     std::cout << "Error: file not open." << std::endl;
+  //     exit(1);
+  //   }
+  //   in.read((char *)&ref, sizeof(T));
+  // }
 
-  template <typename T>
-  static void write_binary(std::ofstream &out, const T *buffer, size_t n)
-  {
-    if (!out.is_open())
-    {
-      std::cout << "Error: file not open." << std::endl;
-      exit(1);
-    }
-    out.write((char *)buffer, sizeof(T) * n);
-  }
+  // template <typename T>
+  // static void write_binary(std::ofstream &out, const T *buffer, size_t n)
+  // {
+  //   if (!out.is_open())
+  //   {
+  //     std::cout << "Error: file not open." << std::endl;
+  //     exit(1);
+  //   }
+  //   out.write((char *)buffer, sizeof(T) * n);
+  // }
 
-  template <typename T>
-  static void read_binary(std::ifstream &in, T *buffer, size_t n)
-  {
-    if (!in.is_open())
-    {
-      std::cout << "Error: file not open." << std::endl;
-      exit(1);
-    }
-    in.read((char *)buffer, sizeof(T) * n);
-  }
+  // template <typename T>
+  // static void read_binary(std::ifstream &in, T *buffer, size_t n)
+  // {
+  //   if (!in.is_open())
+  //   {
+  //     std::cout << "Error: file not open." << std::endl;
+  //     exit(1);
+  //   }
+  //   in.read((char *)buffer, sizeof(T) * n);
+  // }
 
   //////////////////////////////////////
   /// @brief Some Vector IO Funtions ///

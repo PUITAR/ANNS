@@ -1,21 +1,16 @@
 #pragma once
 
-// http://koturn.hatenablog.com/entry/2016/07/18/090000
-// windows is not supported, but just in case (later someone might implement)
-// https://software.intel.com/sites/landingpage/IntrinsicsGuide/#expand=590,27,2
 #ifdef _MSC_VER
 #include <immintrin.h>
 #else
 #include <x86intrin.h>
 #endif
 
+#include <anns.hpp>
 #include <string>
 #include <cassert>
 #include <iostream>
 #include <cmath>
-
-// Based on them, AVX512 implementation is also prepared.
-// But it doesn't seem drastically fast. Only slightly faster than AVX:
 
 #if defined(__AVX512F__)
 static const std::string g_simd_architecture = "avx512";
@@ -46,10 +41,7 @@ static inline __m512 _mm512_hadd_ps(__m512 a)
 }
 #endif
 
-// ========================= Reading functions ============================
-
 // Reading function for SSE, AVX, and AVX512
-
 // reads 0 <= d < 4 floats as __m128
 static inline __m128 masked_read(size_t d, const float *x)
 {
@@ -126,12 +118,10 @@ namespace anns
   namespace metrics
   {
 
-    // ========================= L2 Distance functions ============================
-
 #if defined(__AVX512F__)
 
     // AVX512 implementation by Yusuke
-    static float L2(const float *x, const float *y, size_t d)
+    static float euclidean(const float *x, const float *y, size_t d)
     {
       /// @brief when dimension < 20, the runtime of distance function show that bruteforce < simd.
       if (d < bf_upbound_lim_float)
@@ -206,7 +196,7 @@ namespace anns
       return _mm_cvtss_f32(msum3);
     }
 
-    static float L2(const uint8_t *x, const uint8_t *y, size_t d)
+    static float euclidean(const uint8_t *x, const uint8_t *y, size_t d)
     {
       if (d < bf_upbound_lim_uint8)
       {
@@ -319,7 +309,7 @@ namespace anns
 #elif defined(__AVX__)
 
     // AVX implementation
-    static float L2(const float *x, const float *y, size_t d)
+    static float euclidean(const float *x, const float *y, size_t d)
     {
       if (d < bf_upbound_lim_float)
       {
@@ -378,7 +368,7 @@ namespace anns
       return _mm_cvtss_f32(msum2);
     }
 
-    static float L2(const uint8_t *x, const uint8_t *y, size_t d)
+    static float euclidean(const uint8_t *x, const uint8_t *y, size_t d)
     {
       if (d < bf_upbound_lim_uint8)
       {
@@ -466,7 +456,7 @@ namespace anns
 #elif defined(__SSE__)
 
     // distance for vector<float>
-    static float L2(const float *x, const float *y, size_t d)
+    static float euclidean(const float *x, const float *y, size_t d)
     {
       if (d < bf_upbound_lim_float)
       {
@@ -510,7 +500,7 @@ namespace anns
     }
 
     // distance for vector<uint8_t>
-    static float L2(const uint8_t *x, const uint8_t *y, size_t d)
+    static float euclidean(const uint8_t *x, const uint8_t *y, size_t d)
     {
       if (d < bf_upbound_lim_uint8)
       {
@@ -570,37 +560,35 @@ namespace anns
       return _mm_cvtss_f32(msum);
     }
 
-#else 
+#else
 
-  static float L2(const float* x, const float* y, size_t d)
-  {
-    float dist = 0, diff;
-    for (size_t i = 0; i < d; i++)
+    static float euclidean(const float *x, const float *y, size_t d)
     {
-      diff = x[i] - y[i];
-      dist += diff * diff;
+      float dist = 0, diff;
+      for (size_t i = 0; i < d; i++)
+      {
+        diff = x[i] - y[i];
+        dist += diff * diff;
+      }
+      return dist;
     }
-    return dist;
-  }
 
-  static float L2(const uint8_t* x, const uint8_t* y, size_t d)
-  {
-    float dist = 0, diff;
-    for (size_t i = 0; i < d; i++)
+    static float euclidean(const uint8_t *x, const uint8_t *y, size_t d)
     {
-      diff = x[i] - y[i];
-      dist += diff * diff;
+      float dist = 0, diff;
+      for (size_t i = 0; i < d; i++)
+      {
+        diff = x[i] - y[i];
+        dist += diff * diff;
+      }
+      return dist;
     }
-    return dist;
-  }
 
 #endif
 
-    // ========================= Inner Product Distance functions ============================
-
 #if defined(__AVX512F__)
 
-    static float InnerProduct(const float *x, const float *y, size_t d)
+    static float inner_product(const float *x, const float *y, size_t d)
     {
       if (d < bf_upbound_lim_float)
       {
@@ -660,7 +648,7 @@ namespace anns
       return -_mm_cvtss_f32(msum3);
     }
 
-    static float InnerProduct(const uint8_t *x, const uint8_t *y, size_t d)
+    static float inner_product(const uint8_t *x, const uint8_t *y, size_t d)
     {
       if (d < bf_upbound_lim_uint8)
       {
@@ -748,7 +736,7 @@ namespace anns
 
 #elif defined(__AVX__)
 
-    static float InnerProduct(const float *x, const float *y, size_t d)
+    static float inner_product(const float *x, const float *y, size_t d)
     {
       if (d < bf_upbound_lim_float)
       {
@@ -798,7 +786,7 @@ namespace anns
       return -_mm_cvtss_f32(msum2);
     }
 
-    static float InnerProduct(const uint8_t *x, const uint8_t *y, size_t d)
+    static float inner_product(const uint8_t *x, const uint8_t *y, size_t d)
     {
       if (d < bf_upbound_lim_uint8)
       {
@@ -867,7 +855,7 @@ namespace anns
 
 #elif defined(__SSE__)
 
-    static float InnerProduct(const float *x, const float *y, size_t d)
+    static float inner_product(const float *x, const float *y, size_t d)
     {
       if (d < bf_upbound_lim_float)
       {
@@ -904,7 +892,7 @@ namespace anns
       return -_mm_cvtss_f32(msum1);
     }
 
-    static float InnerProduct(const uint8_t *x, const uint8_t *y, size_t d)
+    static float inner_product(const uint8_t *x, const uint8_t *y, size_t d)
     {
       if (d < bf_upbound_lim_uint8)
       {
@@ -954,31 +942,29 @@ namespace anns
 
 #else
 
-  static float InnerProduct(const float *x, const float *y, size_t d)
-  {
-    float dist = 0;
-    for (size_t i = 0; i < d; i++)
+    static float inner_product(const float *x, const float *y, size_t d)
     {
-      dist += x[i] * y[i];
+      float dist = 0;
+      for (size_t i = 0; i < d; i++)
+      {
+        dist += x[i] * y[i];
+      }
+      return dist;
     }
-    return dist;
-  }
 
-  static float InnerProduct(const uint8_t *x, const uint8_t *y, size_t d)
-  {
-    float dist = 0;
-    for (size_t i = 0; i < d; i++)
+    static float inner_product(const uint8_t *x, const uint8_t *y, size_t d)
     {
-      dist += x[i] * y[i];
+      float dist = 0;
+      for (size_t i = 0; i < d; i++)
+      {
+        dist += x[i] * y[i];
+      }
+      return dist;
     }
-    return dist;
-  }
 
 #endif
 
-    // L1 Distance without SIMD
-
-    static float L1(const float *x, const float *y, size_t d)
+    static float hamming(const float *x, const float *y, size_t d)
     {
       float dist = 0;
       for (size_t i = 0; i < d; i++)
@@ -988,7 +974,7 @@ namespace anns
       return dist;
     }
 
-    static float L1(const uint8_t *x, const uint8_t *y, size_t d)
+    static float hamming(const uint8_t *x, const uint8_t *y, size_t d)
     {
       float dist = 0;
       for (size_t i = 0; i < d; i++)
@@ -996,6 +982,20 @@ namespace anns
         dist += fabsf(x[i] - y[i]);
       }
       return dist;
+    }
+
+    static float cosine(const float *x, const float *y, size_t d)
+    {
+      assert(d <= MAGIC_DIMENSION);
+      static const float zero_float[MAGIC_DIMENSION] = {0};
+      return inner_product(x, y, d) / sqrt(euclidean(x, zero_float, d) * euclidean(y, zero_float, d));
+    }
+
+    static float cosine(const uint8_t *x, const uint8_t *y, size_t d)
+    {
+      assert(d <= MAGIC_DIMENSION);
+      static const uint8_t zero_uint8[MAGIC_DIMENSION] = {0};
+      return inner_product(x, y, d) / sqrt(euclidean(x, zero_uint8, d) * euclidean(y, zero_uint8, d));
     }
 
   }
