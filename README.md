@@ -3,6 +3,7 @@
 This is a very basic library of ANNS sota algorithms. It is written in C++/C++ standard libarary and can be used to build and query an index of points in high-dimensional space. The library provides a variety of algorithms for building and querying the index. The library is designed to be easy to use and to provide relatively high performance.
 
 It's a very useful tool for you to build your own ANNS index alogrithm without too much effort.
+There are four graph-based methods and IVFFlat supported now.
 
 ## C++ Version
 
