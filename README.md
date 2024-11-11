@@ -10,13 +10,10 @@ There are four graph-based methods and IVFFlat supported now.
 This is an example of how to use the ANNS library to build and query an index.
 
 ```c++
-DataSetWrapper<data_t> base, query;
-  IntervalSetWrapper bcond, qcond;
+  DataSetWrapper<data_t> base, query;
   GroundTruth gt;
   base.load("data/sift-128-euclidean.train.fvecs");
   query.load("data/sift-128-euclidean.test.fvecs");
-  bcond.load("data/sift-128-euclidean.train.uniform-0-1.fvecs");
-  qcond.load("data/sift-128-euclidean.test.uniform-0-1.fvecs");
   gt.load("data/sift-128-euclidean.cover.uniform-0-1.ivecs");
 
   const size_t k = 1;
@@ -26,7 +23,7 @@ DataSetWrapper<data_t> base, query;
   HNSW<data_t, metrics::euclidean> index(32, 128);
   index.set_num_threads(24); 
   timer.start();
-  index.build(base, bcond);
+  index.build(base);
   timer.stop();
   cout << "Build time: " << timer.get() << endl;
 
@@ -38,7 +35,7 @@ DataSetWrapper<data_t> base, query;
     matrix_id_t knn;
     matrix_di_t dis;
     timer.start();
-    index.search(query, qcond, k, ef, 10, Interval::cover, knn, dis);
+    index.search(query, k, ef, knn, dis);
     timer.stop();
     out << timer.get() << "," << gt.recall(k, knn) << endl;
   }
