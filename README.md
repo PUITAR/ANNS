@@ -10,67 +10,39 @@ There are four graph-based methods and IVFFlat supported now.
 This is an example of how to use the ANNS library to build and query an index.
 
 ```c++
-#include <graph/hnsw.hpp>
-#include <utils/binary.hpp>
-#include <utils/resize.hpp>
-#include <utils/recall.hpp>
-#include <utils/timer.hpp>
-#include <iostream>
+DataSetWrapper<data_t> base, query;
+  IntervalSetWrapper bcond, qcond;
+  GroundTruth gt;
+  base.load("data/sift-128-euclidean.train.fvecs");
+  query.load("data/sift-128-euclidean.test.fvecs");
+  bcond.load("data/sift-128-euclidean.train.uniform-0-1.fvecs");
+  qcond.load("data/sift-128-euclidean.test.uniform-0-1.fvecs");
+  gt.load("data/sift-128-euclidean.cover.uniform-0-1.ivecs");
 
-using namespace std;
-using namespace anns;
+  const size_t k = 1;
+  utils::Timer timer;
 
-// const std::string bp = "/var/lib/docker/anns/dataset/sift1m/base.fvecs";
-const std::string bp = "../data/sift-128-euclidean.train.fvecs";
-const std::string qp = "../data/sift-128-euclidean.test.fvecs";
-const std::string gp = "../data/sift-128-euclidean.gt.ivecs";
+  // build index
+  HNSW<data_t, metrics::euclidean> index(32, 128);
+  index.set_num_threads(24); 
+  timer.start();
+  index.build(base, bcond);
+  timer.stop();
+  cout << "Build time: " << timer.get() << endl;
 
-const size_t k = 1;
-
-int main(int argc, char **argv)
-{
-  std::vector<float> base, query;
-  std::vector<id_t> gt;
-  auto [nb, d] = utils::load_from_file(base, bp);
-  auto [nq, _] = utils::load_from_file(query, qp);
-  auto [ng, t] = utils::load_from_file(gt, gp);
-  auto nestq = utils::nest(std::move(query), nq, d);
-  std::cout << nb << "x" << d << std::endl;
-  std::cout << nq << "x" << d << std::endl;
-  std::cout << ng << "x" << t << std::endl;
-
-  { /* Build an user-defined index, then save it into the file with suffix '.idx'. */
-    auto index = std::make_unique<anns::graph::HNSW<float, metrics::L2>> (d, 16, 500);
-    utils::Timer timer;
+  // query with different parameters
+  ofstream out("hnsw_postfilter.csv");
+  for (size_t ef = 1; ef <= 128; ef++)
+  {
+    timer.reset();
+    matrix_id_t knn;
+    matrix_di_t dis;
     timer.start();
-    index->set_num_threads(24);
-    index->build(base);
+    index.search(query, qcond, k, ef, 10, Interval::cover, knn, dis);
     timer.stop();
-    std::cout << "build time: " << timer.get() << " s" << std::endl;
-    index->save("hnsw_sift1m.idx");
-    std::cout << "index size: " << index->index_size() << " bytes" << std::endl;
+    out << timer.get() << "," << gt.recall(k, knn) << endl;
   }
-
-  { /* Read the index from the index file build so far, then process the k-ANNS task */
-    auto index = std::make_unique<anns::graph::HNSW<float, metrics::L2>> (base, "hnsw_sift1m.idx");
-    index->set_num_threads(24);
-    std::vector<std::vector<id_t>> knn;
-    std::vector<std::vector<float>> dis;
-    index->search(nestq, k, 128, knn, dis);
-    auto recall = utils::recall(k, t, gt, knn);
-    std::cout << "recall: " << recall << std::endl;
-  }
-
-  return 0;
 }
-```
-
-## Python Version
-
-To use the ANNS library simply, we wrap the CPP APIs with Python API, which you can use as follow. [Example for ANNS Python API](test_anns.ipynb)
-
-```python
-# Still on going...
 ```
 
 ## Dataset 
