@@ -9,7 +9,6 @@ It's a very useful tool for you to build your own ANNS index alogrithm without t
 This is an example of how to use the ANNS library to build and query an index.
 
 ```c++
-<<<<<<< HEAD
   DataSetWrapper<data_t> base, query;
   GroundTruth gt;
   base.load("data/sift-128-euclidean.train.fvecs");
@@ -35,34 +34,10 @@ This is an example of how to use the ANNS library to build and query an index.
     matrix_id_t knn;
     matrix_di_t dis;
     timer.start();
-=======
-  DataSetWrapper<data_t> base("data/sift-128-euclidean.train.fvecs"), 
-                         query("data/sift-128-euclidean.test.fvecs");
-  IntervalSetWrapper base_attr("data/sift-128-euclidean.train.uniform-0-1.fvecs"), 
-                     query_attr("data/sift-128-euclidean.test.uniform-0-1.fvecs");
-  utils::GroundTruth gt("data/sift-128-euclidean.cover.uniform-0-1.ivecs");
-  const size_t k = 1;
-  utils::Timer timer;
-  graph::HNSW<data, metric::euclidean> index("hnsw", {32, 128});
-  index.set_num_threads(24); 
-  timer.start(); index.build(base, base_attr); timer.stop();
-  cout << "Build time: " << timer.get() << endl;
-  index.set_conquer(Interval::cover);
-  ofstream out("hnsw_postfilter.csv");
-  for (size_t ef = 1; ef <= 128; ef++)
-  {
-    knn_t knn;
-    dis_t dis;
-    timer.reset(); timer.start();
->>>>>>> 81628d3 (stable verrsion)
     index.search(query, k, ef, knn, dis);
     timer.stop();
     out << timer.get() << "," << gt.recall(k, knn) << endl;
   }
-<<<<<<< HEAD
-}
-=======
->>>>>>> 81628d3 (stable verrsion)
 ```
 
 ## Dataset 
