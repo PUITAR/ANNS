@@ -21,7 +21,9 @@ namespace anns
     /// By define save function, you can define your child graph with the constructor:
     virtual void save(const std::string &filename) const = 0;
 
-    virtual void search(const DataSet<data_t> &query, size_t k, size_t ef, matrix_id_t &knn, matrix_di_t &dis) = 0;
+    virtual res_t search(const DataSet<data_t> &query, size_t k, size_t ef) = 0;
+
+    virtual std::priority_queue<std::pair<float, int>> search(const data_t *data_point, size_t k, size_t ef) = 0;
 
     virtual size_t index_size() const = 0;
 

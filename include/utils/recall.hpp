@@ -13,52 +13,47 @@ namespace anns
   {
 
     /// @brief get the recall of the results
-    /// @param knn_results
-    /// @param ground_truth
-    /// @param dimension_gt the dimension of the ground_truth vector (cause the `ground_truth` is save in ivec(vector) file?)
+    /// @param knn
+    /// @param gt
+    /// @param dgt the dimension of the gt vector (cause the `gt` is save in ivec(vector) file?)
     /// @return
-    double recall(size_t k, size_t dimension_gt, const std::vector<id_t> &ground_truth, const std::vector<std::vector<id_t>> &knn_results)
+    double recall(size_t k, size_t dgt, const knn_t &gt, const knn_t &knn)
     {
-      const size_t nq = knn_results.size();
-      size_t ok = 0, neg = 0;
-#pragma omp parallel for reduction(+ : ok, neg)
+      assert(k <= dgt && "k must be less than or equal to dgt");
+      const size_t nq = knn.size() / k;
+      size_t ok = 0;
+#pragma omp parallel for reduction(+ : ok)
       for (size_t q = 0; q < nq; q++)
       {
-        // const size_t actual_k = knn_results[q].size();
-        std::unordered_set<id_t> st; // (ground_truth.begin() + q * dimension_gt, ground_truth.begin() + q * dimension_gt + k);
+        std::unordered_set<int> st;
         for (size_t i = 0; i < k; i++)
         {
-          id_t id = ground_truth[q * dimension_gt + i];
-          if (id != MAGIC_ID)
-          {
-            st.insert(id);
-          }
-          else
-          {
-            neg++;
-          }
+          st.insert(gt[q * dgt + i]);
         }
-        for (const auto &id : knn_results[q])
+        for (size_t i = 0; i < k; i++)
         {
-          if (st.count(id))
+          if (st.count(knn[q * k + i]))
           {
             ok++;
           }
         }
       }
-      return double(ok) / (nq * k - neg);
+      return double(ok) / knn.size();
     }
 
-    struct GroundTruth: public DataSetWrapper<id_t>
+    struct GroundTruth: public DataSetWrapper<int>
     {
-      using DataSetWrapper<id_t>::base_;
-      using DataSetWrapper<id_t>::dim_;
-      using DataSetWrapper<id_t>::load;
+      using DataSetWrapper<int>::base_;
+      using DataSetWrapper<int>::dim_;
+      using DataSetWrapper<int>::load;
 
-      inline double recall(size_t k, const matrix_id_t &knn) const noexcept
+      GroundTruth(const std::string &fname): DataSetWrapper<int>(fname) {}
+
+      inline double recall(size_t k, const knn_t &knn) const noexcept
       {
         return utils::recall(k, dim_, base_, knn);
       }
+      
     };
 
   }

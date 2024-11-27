@@ -31,7 +31,7 @@ namespace anns
       size_t it_{0};
       std::vector<data_t> centroids_;
       std::vector<size_t> offset_;
-      std::vector<id_t> reo_;
+      std::vector<int> reo_;
 
     public:
       __USE_BASE__
@@ -62,7 +62,7 @@ namespace anns
         }
         for (size_t i = 0; i < base_.num_; i++)
         {
-          in.read(reinterpret_cast<char *>(&reo_[i]), sizeof(id_t));
+          in.read(reinterpret_cast<char *>(&reo_[i]), sizeof(int));
         }
       }
 
@@ -85,7 +85,7 @@ namespace anns
         }
         for (size_t i = 0; i < reo_.size(); i++)
         {
-          out.write(reinterpret_cast<const char *>(&reo_[i]), sizeof(id_t));
+          out.write(reinterpret_cast<const char *>(&reo_[i]), sizeof(int));
         }
       }
 
@@ -121,13 +121,13 @@ namespace anns
         // std::cout << 121 << std::endl;
         // training
         std::vector<std::mutex> mutexes(kc_);
-        std::vector<id_t> cids(base_.num_);
+        std::vector<int> cids(base_.num_);
         for (size_t tt = 0; tt < it_; tt++)
         {
           // find nearest centroid
           std::fill(offset_.begin(), offset_.end(), 0);
 #pragma omp parallel for num_threads(num_threads_) schedule(static)
-          for (id_t id = 0; id < base_.num_; id++)
+          for (int id = 0; id < base_.num_; id++)
           {
             cids[id] = find_nearest_centroid(base_[id], 1).top().second;
             std::unique_lock<std::mutex> lock(mutexes[cids[id]]);
@@ -137,7 +137,7 @@ namespace anns
           // update centroids
           std::fill(centroids_.begin(), centroids_.end(), 0);
 #pragma omp parallel for num_threads(num_threads_) schedule(static)
-          for (id_t id = 0; id < base_.num_; id++)
+          for (int id = 0; id < base_.num_; id++)
           {
             std::unique_lock<std::mutex> lock(mutexes[cids[id]]);
             for (size_t j = 0; j < base_.dim_; j++)
@@ -164,65 +164,59 @@ namespace anns
         }
         // std::cout << 165 << std::endl;
         // reorder vectors
-        for (id_t id = 0; id < base_.num_; id++)
+        for (int id = 0; id < base_.num_; id++)
         {
           reo_[id] = id;
         }
-        std::sort(reo_.begin(), reo_.end(), [&](id_t a, id_t b)
+        std::sort(reo_.begin(), reo_.end(), [&](int a, int b)
                   { return cids[a] < cids[b]; });
-        base_.hash_ = [this](id_t id)
+        base_.hash_ = [this](int id)
         { return this->reo_[id]; };
         // std::cout << 175 << std::endl;
       }
 
       size_t index_size() const noexcept override
       {
-        return centroids_.size() * sizeof(data_t) + offset_.size() * sizeof(size_t) + reo_.size() * sizeof(id_t);
+        return centroids_.size() * sizeof(data_t) + offset_.size() * sizeof(size_t) + reo_.size() * sizeof(int);
       }
 
-      void search(const DataSet<data_t> &query, size_t k, size_t nprobe, matrix_id_t &knn, matrix_di_t &dis) override
+      void search(const DataSet<data_t> &query, size_t k, size_t nprobe, knn_t &knn, dis_t &dis) override
       {
         assert(base_.dim_ == query.dim_);
-        knn.clear(), knn.resize(query.num_);
-        dis.clear(), dis.resize(query.num_);
+        knn.resize(query.num_ * k, MAGIC_ID);
+        dis.resize(query.num_ * k, MAGIC_DIST);
 
 #pragma omp parallel for schedule(dynamic, 64) num_threads(num_threads_)
         for (size_t i = 0; i < query.num_; i++)
         {
           const data_t *q = query[i];
-          auto &knn_i = knn[i];
-          auto &dis_i = dis[i];
           auto nnc = find_nearest_centroid(q, nprobe);
-          std::priority_queue<std::pair<float, id_t>> candidates;
+          std::priority_queue<std::pair<float, int>> candidates;
           while (nnc.size())
           {
             auto [sid, eid] = cluster_at(nnc.top().second);
             nnc.pop();
-            for (id_t id = sid; id < eid; id++)
+            for (int id = sid; id < eid; id++)
             {
               candidates.emplace(distance(q, base_[id], base_.dim_), id);
               if (candidates.size() > k)
                 candidates.pop();
             }
           }
-          knn_i.reserve(candidates.size());
-          dis_i.reserve(candidates.size());
-          while (candidates.size())
+          for (size_t j = 0; candidates.size(); j++)
           {
-            auto [d, id] = candidates.top();
+            std::tie(dis[i * k + j], knn[i * k + j]) = candidates.top();
             candidates.pop();
-            knn_i.emplace_back(reo_[id]);
-            dis_i.emplace_back(d);
           }
         }
       }
 
     protected:
-      inline std::priority_queue<std::pair<float, id_t>>
+      inline std::priority_queue<std::pair<float, int>>
       find_nearest_centroid(const data_t *x, size_t k) const noexcept
       {
-        std::priority_queue<std::pair<float, id_t>> pq;
-        for (id_t i = 0; i < kc_; i++)
+        std::priority_queue<std::pair<float, int>> pq;
+        for (int i = 0; i < kc_; i++)
         {
           pq.emplace(distance(x, centroids_.data() + i * base_.dim_, base_.dim_), i);
           if (pq.size() > k)
@@ -231,7 +225,7 @@ namespace anns
         return pq;
       }
 
-      inline std::pair<id_t, id_t> cluster_at(id_t id) const noexcept
+      inline std::pair<int, int> cluster_at(int id) const noexcept
       {
         return {id ? offset_[id - 1] : 0, offset_[id]};
       }

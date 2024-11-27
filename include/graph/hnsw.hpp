@@ -37,7 +37,7 @@ namespace anns
   {
 
     template <typename data_t, float (*distance)(const data_t *, const data_t *, size_t)>
-    class HNSW: public Base<data_t>
+    class HNSW : public Base<data_t>
     {
     protected:
       size_t Mmax_{0};            // maximum number of connections for each element per layer
@@ -46,10 +46,10 @@ namespace anns
       double mult_{0.0};
       double rev_size_{0.0};
       int max_level_{0};
-      id_t enterpoint_node_{MAGIC_ID};
+      int enterpoint_node_{MAGIC_ID};
       int random_seed_{100};
       std::vector<int> element_levels_; // keeps level of each element
-      std::vector<std::vector<std::vector<id_t>>> link_lists_;
+      std::vector<std::vector<std::vector<int>>> link_lists_;
       std::default_random_engine level_generator_;
       std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
       std::mutex global_;
@@ -77,7 +77,7 @@ namespace anns
         element_levels_.resize(base_.num_);
         in.read(reinterpret_cast<char *>(element_levels_.data()), base_.num_ * sizeof(int));
         link_lists_.resize(base_.num_);
-        for (id_t id = 0; id < base_.num_; id++)
+        for (int id = 0; id < base_.num_; id++)
         {
           auto &ll = link_lists_[id];
           ll.resize(element_levels_[id] + 1);
@@ -86,7 +86,7 @@ namespace anns
             size_t n;
             in.read(reinterpret_cast<char *>(&n), sizeof(size_t));
             l.resize(n);
-            in.read(reinterpret_cast<char *>(l.data()), n * sizeof(id_t));
+            in.read(reinterpret_cast<char *>(l.data()), n * sizeof(int));
           }
         }
         level_generator_.seed(random_seed_);
@@ -115,7 +115,7 @@ namespace anns
             size_t n = l.size();
             const char *buffer = reinterpret_cast<const char *>(l.data());
             out.write(reinterpret_cast<const char *>(&n), sizeof(n));
-            out.write(buffer, sizeof(id_t) * n);
+            out.write(buffer, sizeof(int) * n);
           }
         }
       }
@@ -130,39 +130,28 @@ namespace anns
         element_levels_.resize(base_.num_, 0);
 
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
-        for (id_t id = 0; id < base_.num_; id++)
+        for (int id = 0; id < base_.num_; id++)
         {
           build_point(id);
         }
       }
 
-      void search(const DataSet<data_t> &query, size_t k, size_t ef, matrix_id_t &knn, matrix_di_t &dist) override
+      res_t search(const DataSet<data_t> &query, size_t k, size_t ef) override
       {
         assert(base_.dim_ == query.dim_);
-        size_t nq = query.num_;
-        knn.clear();
-        dist.clear();
-        knn.resize(nq);
-        dist.resize(nq);
-
+        knn_t knn(query.num_ * k, MAGIC_ID);
+        dis_t dis(query.num_ * k, MAGIC_DIST);
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
-        for (size_t i = 0; i < nq; i++)
+        for (size_t i = 0; i < query.num_; i++)
         {
-          const data_t *q = query[i];
-          auto &knn_i = knn[i];
-          auto &dist_i = dist[i];
-
-          auto r = search(q, k, ef);
-          knn_i.reserve(r.size());
-          dist_i.reserve(r.size());
-          while (r.size())
+          auto r = search(query[i], k, ef);
+          for (size_t j = 0; r.size(); j++)
           {
-            const auto &te = r.top();
-            knn_i.emplace_back(te.second);
-            dist_i.emplace_back(te.first);
+            std::tie(dis[i * k + j], knn[i * k + j]) = r.top();
             r.pop();
           }
         }
+        return {dis, knn};
       }
 
       size_t index_size() const noexcept override
@@ -172,20 +161,19 @@ namespace anns
         {
           for (const auto &l : ll)
           {
-            sz += l.size() * sizeof(id_t);
+            sz += l.size() * sizeof(int);
           }
         }
         return sz;
       }
 
-    protected:
-      std::priority_queue<std::pair<float, id_t>> search(const data_t *query_data, size_t k, size_t ef)
+      std::priority_queue<std::pair<float, int>> search(const data_t *query_data, size_t k, size_t ef) override
       {
-        assert(ef >= k && "ef > k!");
+        assert(ef >= k && "ef > k");
         if (base_.num_ == 0)
-          return std::priority_queue<std::pair<float, id_t>>();
+          return std::priority_queue<std::pair<float, int>>();
         size_t comparison = 0;
-        id_t cur_obj = enterpoint_node_;
+        int cur_obj = enterpoint_node_;
         float cur_dist = distance(query_data, base_[enterpoint_node_], base_.dim_);
         comparison++;
         for (int lev = element_levels_[enterpoint_node_]; lev > 0; lev--)
@@ -199,7 +187,7 @@ namespace anns
             size_t num_neighbors = neighbors.size();
             for (size_t i = 0; i < num_neighbors; i++)
             {
-              id_t cand = neighbors[i];
+              int cand = neighbors[i];
               float d = distance(query_data, base_[cand], base_.dim_);
               if (d < cur_dist)
               {
@@ -220,13 +208,14 @@ namespace anns
         return top_candidates;
       }
 
+    protected:
       /// @brief Connection new element and return next cloest element id
       /// @param data_point
       /// @param id
       /// @param top_candidates
       /// @param layer
       /// @return
-      id_t mutually_connect_new_element(const data_t *data_point, id_t id, std::priority_queue<std::pair<float, id_t>> &top_candidates, int level)
+      int mutually_connect_new_element(const data_t *data_point, int id, std::priority_queue<std::pair<float, int>> &top_candidates, int level)
       {
         size_t Mcurmax = level ? Mmax_ : Mmax0_;
         prune_neighbors(top_candidates, Mcurmax);
@@ -246,8 +235,8 @@ namespace anns
             top_candidates.pop();
           }
         }
-        id_t next_closet_entry_point = neighbors_cur.back();
-        for (id_t sid : neighbors_cur)
+        int next_closet_entry_point = neighbors_cur.back();
+        for (int sid : neighbors_cur)
         {
           std::unique_lock<std::mutex> lock(*link_list_locks_[sid]);
           auto &neighbors = link_lists_[sid][level];
@@ -276,7 +265,7 @@ namespace anns
             // finding the "farest" element to replace it with the new one
             float d_max = distance(base_[id], base_[sid], base_.dim_);
             // Heuristic:
-            std::priority_queue<std::pair<float, id_t>> candidates;
+            std::priority_queue<std::pair<float, int>> candidates;
             candidates.emplace(d_max, id);
             for (size_t j = 0; j < sz_link_list_other; j++)
             {
@@ -299,14 +288,14 @@ namespace anns
       /// @brief Return max heap of the top NN elements
       /// @param top_candidates
       /// @param NN
-      void prune_neighbors(std::priority_queue<std::pair<float, id_t>> &top_candidates, size_t NN)
+      void prune_neighbors(std::priority_queue<std::pair<float, int>> &top_candidates, size_t NN)
       {
         if (top_candidates.size() < NN)
         {
           return;
         }
-        std::priority_queue<std::pair<float, id_t>> queue_closest; // min heap
-        std::vector<std::pair<float, id_t>> return_list;
+        std::priority_queue<std::pair<float, int>> queue_closest; // min heap
+        std::vector<std::pair<float, int>> return_list;
         while (top_candidates.size())
         { // replace top_candidates with a min-heap, so that each poping can return the nearest neighbor.
           const auto &te = top_candidates.top();
@@ -357,12 +346,12 @@ namespace anns
       /// @param level
       /// @param ef
       /// @return
-      std::priority_queue<std::pair<float, id_t>> search_base_layer(id_t ep_id, const data_t *data_point, int level, size_t ef)
-      { 
+      std::priority_queue<std::pair<float, int>> search_base_layer(int ep_id, const data_t *data_point, int level, size_t ef)
+      {
         size_t comparison = 0;
         std::vector<bool> mass_visited(base_.num_, false);
-        std::priority_queue<std::pair<float, id_t>> top_candidates;
-        std::priority_queue<std::pair<float, id_t>> candidate_set;
+        std::priority_queue<std::pair<float, int>> top_candidates;
+        std::priority_queue<std::pair<float, int>> candidate_set;
         float dist = distance(data_point, base_[ep_id], base_.dim_);
         top_candidates.emplace(dist, ep_id); // max heap
         candidate_set.emplace(-dist, ep_id); // min heap
@@ -371,25 +360,25 @@ namespace anns
         float low_bound = dist;
         while (candidate_set.size())
         {
-          auto curr_el_pair = candidate_set.top(); 
+          auto curr_el_pair = candidate_set.top();
           candidate_set.pop();
           if (-curr_el_pair.first > low_bound && top_candidates.size() == ef)
             break;
-          id_t curr_node_id = curr_el_pair.second;
+          int curr_node_id = curr_el_pair.second;
           std::unique_lock<std::mutex> lock(*link_list_locks_[curr_node_id]);
           const auto &neighbors = link_lists_[curr_node_id][level];
-          for (id_t neighbor_id : neighbors)
-          { 
+          for (int neighbor_id : neighbors)
+          {
             if (mass_visited[neighbor_id] == false)
-            { 
-              mass_visited[neighbor_id] = true; 
+            {
+              mass_visited[neighbor_id] = true;
               float dist = distance(data_point, base_[neighbor_id], base_.dim_);
-              comparison++; 
+              comparison++;
               /// @brief If neighbor is closer than farest vector in top result, and result.size still less than ef
               if (top_candidates.top().first > dist || top_candidates.size() < ef)
               {
                 top_candidates.emplace(dist, neighbor_id);
-                candidate_set.emplace(-dist, neighbor_id); 
+                candidate_set.emplace(-dist, neighbor_id);
                 if (top_candidates.size() > ef) // give up farest result so far
                   top_candidates.pop();
                 if (top_candidates.size())
@@ -404,7 +393,7 @@ namespace anns
 
       /// @brief  Add a point to the graph [User should not call this function directly]
       /// @param data_point
-      void build_point(id_t cur_id)
+      void build_point(int cur_id)
       {
         const data_t *data_point = base_[cur_id];
         // alloc memory for the link lists
@@ -412,13 +401,13 @@ namespace anns
         int cur_level = get_random_level(mult_);
         for (int lev = 0; lev <= cur_level; lev++)
         {
-          link_lists_[cur_id].emplace_back(std::vector<id_t>());
+          link_lists_[cur_id].emplace_back(std::vector<int>());
         }
         element_levels_[cur_id] = cur_level;
         std::unique_lock<std::mutex> temp_lock(global_);
         int max_level_copy = max_level_;
-        id_t cur_obj = enterpoint_node_;
-        id_t enterpoint_node_copy = enterpoint_node_;
+        int cur_obj = enterpoint_node_;
+        int enterpoint_node_copy = enterpoint_node_;
         if (cur_level <= max_level_)
           temp_lock.unlock();
         if (enterpoint_node_copy != MAGIC_ID)
@@ -438,7 +427,7 @@ namespace anns
                 size_t num_neighbors = neighbors.size();
                 for (size_t i = 0; i < num_neighbors; i++)
                 {
-                  id_t cand = neighbors[i];
+                  int cand = neighbors[i];
                   float d = distance(data_point, base_[cand], base_.dim_);
                   if (d < cur_dist)
                   {
@@ -448,8 +437,8 @@ namespace anns
                   }
                 }
               }
-            } 
-          } 
+            }
+          }
           /// add edges to lower layers from the closest node
           for (int lev = std::min(cur_level, max_level_copy); lev >= 0; lev--)
           {

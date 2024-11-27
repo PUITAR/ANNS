@@ -47,25 +47,25 @@ namespace anns
             parent[i] = i;
         }
 
-        id_t find(id_t x)
+        int find(int x)
         {
           if (parent[x] != x)
             parent[x] = find(parent[x]);
           return parent[x];
         }
 
-        void union_set(id_t x, id_t y)
+        void union_set(int x, int y)
         {
           parent[find(x)] = find(y);
         }
 
-        std::vector<id_t> parent;
+        std::vector<int> parent;
       };
 
       struct Edge
       {
-        id_t src;
-        id_t dst;
+        int src;
+        int dst;
         float weight;
 
         bool operator<(const Edge &other) const
@@ -78,7 +78,7 @@ namespace anns
       size_t T_{0};
       size_t Ls_{0};
       size_t s_{0};
-      std::vector<std::vector<id_t>> adj_memory_;
+      std::vector<std::vector<int>> adj_memory_;
       std::vector<std::unique_ptr<std::mutex>> link_list_locks_;
 
     public:
@@ -103,7 +103,7 @@ namespace anns
           size_t n;
           in.read(reinterpret_cast<char *>(&n), sizeof(n));
           adj.resize(n);
-          in.read(reinterpret_cast<char *>(adj.data()), n * sizeof(id_t));
+          in.read(reinterpret_cast<char *>(adj.data()), n * sizeof(int));
         }
         link_list_locks_.resize(base_.num_);
         std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](std::unique_ptr<std::mutex> &lock)
@@ -125,7 +125,7 @@ namespace anns
           size_t n = neighbors.size();
           const char *buffer = reinterpret_cast<const char *>(neighbors.data());
           out.write(reinterpret_cast<const char *>(&n), sizeof(n));
-          out.write(buffer, neighbors.size() * sizeof(id_t));
+          out.write(buffer, neighbors.size() * sizeof(int));
         }
       }
 
@@ -136,17 +136,16 @@ namespace anns
         link_list_locks_.resize(base_.num_);
         std::for_each(link_list_locks_.begin(), link_list_locks_.end(), [](std::unique_ptr<std::mutex> &lock)
                       { lock = std::make_unique<std::mutex>(); });
-
-// initialize graph data
+        // initialize graph data
 #pragma omp parallel for schedule(dynamic, 16) num_threads(num_threads_)
-        for (id_t id = 0; id < base_.num_; id++)
+        for (int id = 0; id < base_.num_; id++)
         {
           adj_memory_[id].reserve(s_ * T_);
         }
 #pragma omp parallel for schedule(dynamic, 1) num_threads(num_threads_)
         for (size_t i = 0; i < T_; i++)
         {
-          auto idx_points = std::make_unique<std::vector<id_t>>(base_.num_);
+          auto idx_points = std::make_unique<std::vector<int>>(base_.num_);
           for (size_t j = 0; j < base_.num_; j++)
           {
             idx_points->at(j) = j;
@@ -155,66 +154,51 @@ namespace anns
         }
       }
 
-      void search(const DataSet<data_t> &query, size_t k, size_t ef, matrix_id_t &knn, matrix_di_t &dists) override
+      res_t search(const DataSet<data_t> &query, size_t k, size_t ef) override
       {
         assert(query.dim_ == base_.dim_);
-
-        knn.clear();
-        dists.clear();
-        knn.resize(query.num_);
-        dists.resize(query.num_);
-
+        knn_t knn(query.num_ * k, MAGIC_ID);
+        dis_t dis(query.num_ * k, MAGIC_DIST);
 #pragma omp parallel for schedule(dynamic, 64) num_threads(num_threads_)
         for (size_t i = 0; i < query.num_; i++)
         {
-          const data_t *q = query[i];
-          auto &vid = knn[i];
-          auto &dist = dists[i];
-          auto r = search(q, k, ef);
-          while (r.size())
+          auto r = search(query[i], k, ef);
+          for (size_t j = 0; r.size(); j++)
           {
-            const auto &tt = r.top();
-            vid.emplace_back(tt.second);
-            dist.emplace_back(tt.first);
+            std::tie(dis[i * k + j], knn[i * k + j]) = r.top();
             r.pop();
           }
         }
+        return {dis, knn}; // auto RVO
       }
 
       size_t index_size() const noexcept override
       {
         size_t sz = 0;
-        for (id_t id = 0; id < base_.num_; id++)
+        for (int id = 0; id < base_.num_; id++)
         { // adj list
-          sz += adj_memory_[id].size() * sizeof(id_t);
+          sz += adj_memory_[id].size() * sizeof(int);
         }
         return sz;
       }
 
-    protected:
       /// @brief search the base layer (User call this funtion to do single query).
       /// @param data_point
       /// @param k
       /// @param ef
       /// @return a maxheap containing the knn results
-      std::priority_queue<std::pair<float, id_t>>
-      search(const data_t *data_point, size_t k, size_t ef)
+      std::priority_queue<std::pair<float, int>> search(const data_t *data_point, size_t k, size_t ef) override
       {
         std::vector<bool> mass_visited(base_.num_, false);
-
-        std::priority_queue<std::pair<float, id_t>> top_candidates;
-        std::priority_queue<std::pair<float, id_t>> candidate_set;
-
+        std::priority_queue<std::pair<float, int>> top_candidates;
+        std::priority_queue<std::pair<float, int>> candidate_set;
         size_t comparison = 0;
-
-        id_t ep = random() % base_.num_;
+        int ep = rand() % base_.num_;
         float dist = distance(data_point, base_[ep], base_.dim_);
         comparison++;
-
         top_candidates.emplace(dist, ep); // max heap
         candidate_set.emplace(-dist, ep); // min heap
         mass_visited[ep] = true;
-
         /// @brief Branch and Bound Algorithm
         float low_bound = dist;
         while (candidate_set.size())
@@ -222,50 +206,40 @@ namespace anns
           auto curr_el_pair = candidate_set.top();
           if (-curr_el_pair.first > low_bound && top_candidates.size() == ef)
             break;
-
           candidate_set.pop();
-          id_t curr_node_id = curr_el_pair.second;
-
+          int curr_node_id = curr_el_pair.second;
           std::unique_lock<std::mutex> lock(*link_list_locks_[curr_node_id]);
           const auto &neighbors = adj_memory_[curr_node_id];
-
-          for (id_t neighbor_id : neighbors)
+          for (int neighbor_id : neighbors)
           {
             if (!mass_visited[neighbor_id])
             {
               mass_visited[neighbor_id] = true;
-
               float dd = distance(data_point, base_[neighbor_id], base_.dim_);
               comparison++;
-
               /// @brief If neighbor is closer than farest vector in top result, and result.size still less than ef
               if (top_candidates.top().first > dd || top_candidates.size() < ef)
               {
                 candidate_set.emplace(-dd, neighbor_id);
                 top_candidates.emplace(dd, neighbor_id);
-
                 if (top_candidates.size() > ef) // give up farest result so far
                   top_candidates.pop();
-
                 if (top_candidates.size())
                   low_bound = top_candidates.top().first;
               }
             }
           }
         }
-
         while (top_candidates.size() > k)
         {
           top_candidates.pop();
         }
-
         comparison_.fetch_add(comparison);
         return top_candidates;
       }
 
-      std::vector<std::vector<Edge>> create_exact_mst(
-          const std::vector<id_t> &idx_points,
-          size_t left, size_t right, size_t s)
+    protected:
+      std::vector<std::vector<Edge>> create_exact_mst(const std::vector<int> &idx_points, size_t left, size_t right, size_t s)
       {
         size_t num_points = right - left + 1;
         std::vector<Edge> full_graph;
@@ -290,8 +264,8 @@ namespace anns
         DisjointSet ds(num_points);
         for (const auto &e : full_graph)
         {
-          id_t src = e.src;
-          id_t dst = e.dst;
+          int src = e.src;
+          int dst = e.dst;
           float weight = e.weight;
           if (ds.find(src) != ds.find(dst) && mst[src].size() < s && mst[dst].size() < s)
           {
@@ -304,7 +278,7 @@ namespace anns
         return mst;
       }
 
-      void create_clusters(std::vector<id_t> &idx_points, size_t left, size_t right, size_t Ls, size_t s)
+      void create_clusters(std::vector<int> &idx_points, size_t left, size_t right, size_t Ls, size_t s)
       {
         size_t num_points = right - left + 1;
         if (num_points <= Ls)
@@ -354,7 +328,7 @@ namespace anns
           const data_t *vec_idx_left_p_x = base_[idx_points[x]];
           const data_t *vec_idx_left_p_y = base_[idx_points[y]];
 
-          std::vector<id_t> ids_x_set, ids_y_set;
+          std::vector<int> ids_x_set, ids_y_set;
           ids_x_set.reserve(num_points);
           ids_y_set.reserve(num_points);
 
@@ -399,7 +373,7 @@ namespace anns
       void prune_neighbors(size_t max_neigh)
       {
 #pragma omp parallel for schedule(dynamic, 512) num_threads(num_threads_)
-        for (id_t id = 0; id < base_.num_; id++)
+        for (int id = 0; id < base_.num_; id++)
         {
           const data_t *vec_curid = base_[id];
 
@@ -410,7 +384,7 @@ namespace anns
           if (new_size == neigh.size())
             continue;
 
-          std::vector<std::pair<float, id_t>> score;
+          std::vector<std::pair<float, int>> score;
           score.reserve(neigh.size());
           for (const auto &nid : neigh)
           {

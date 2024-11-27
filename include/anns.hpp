@@ -9,21 +9,17 @@
 
 namespace anns
 {
+  using knn_t = std::vector<int>;
+  using dis_t = std::vector<float>;
+  using res_t = std::pair<dis_t, knn_t>;
 
-#define MAGIC_ID std::numeric_limits<id_t>::max()
+#define MAGIC_ID 0x3f3f3f3f
 #define MAGIC_DIST std::numeric_limits<float>::max()
 #define MAGIC_DIMENSION 1024
 
 #define EPSILON std::numeric_limits<float>::denorm_min()
 
-  using id_t = size_t;
-
-  /// @brief identifiers matrix type (2D)
-  using matrix_id_t = std::vector<std::vector<id_t>>;
-  /// @brief distances matrix type (2D)
-  using matrix_di_t = std::vector<std::vector<float>>;
-
-  inline id_t DEFAULT_HASH(id_t id)
+  inline int DEFAULT_HASH(int id)
   {
     return id;
   }
@@ -36,14 +32,14 @@ namespace anns
     const data_t *data_{nullptr};
     size_t num_{0};
     size_t dim_{0};
-    std::function<id_t(id_t)> hash_{DEFAULT_HASH};
+    std::function<int(int)> hash_{DEFAULT_HASH};
 
-    inline const data_t *access(id_t id) const
+    inline const data_t *access(int id) const
     {
       return data_ + hash_(id) * dim_;
     }
 
-    inline const data_t *operator[](id_t id) const
+    inline const data_t *operator[](int id) const
     {
       return data_ + hash_(id) * dim_;
     }
@@ -57,6 +53,11 @@ namespace anns
     using DataSet<data_t>::dim_;
     using DataSet<data_t>::hash_;
     std::vector<data_t> base_;
+
+    DataSetWrapper(const std::string &fname)
+    {
+      load(fname);
+    }
 
     void load(const std::string &filename, bool bin = false) noexcept
     {
